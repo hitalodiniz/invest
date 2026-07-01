@@ -1,0 +1,26 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Operacao {
+  id               String   @id @default(uuid())
+  data             String   
+  ativo            String   
+  operacao         String   
+  tipo             String   
+  codigo           String   
+  qtde             Int
+  cotacaoAcao      Float
+  strike           Float
+  premioUnInicial  Float
+  distanciaStrike  Float
+  exercendo        String   @default("Não")
+  cotacaoOpcao     Float    @default(0.0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
