@@ -1,20 +1,39 @@
 "use client";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 
-export default function DashboardMesaSheetDeslizante() {
+export default function DashboardMesa() {
   const [data, setData] = useState<any>(null);
   const [market, setMarket] = useState<any>({ prices: {}, fontes: {} });
   const [idExpandido, setIdExpandido] = useState<string | null>(null);
-  const [ativoSelecionado, setAtivoSelecionado] = useState<string | null>(null);
-  const [gradeAtivo, setGradeAtivo] = useState<any>(null);
-  const [carregandoGrade, setCarregandoGrade] = useState(false);
-  const [vencimentoSelecionado, setVencimentoSelecionado] =
-    useState<string>("");
 
   // Filtros Globais da Carteira
   const [filtroAtivo, setFiltroAtivo] = useState<string>("TODOS");
   const [filtroTipo, setFiltroTipo] = useState<string>("TODOS");
   const [filtroDecisao, setFiltroDecisao] = useState<string>("TODOS");
+  const [filtroStatus, setFiltroStatus] = useState<string>("TODOS");
+  const [busca, setBusca] = useState<string>("");
+  const [ordenacao, setOrdenacao] = useState<string>("DATA_RECENTE");
+  const [abaVencimento, setAbaVencimento] = useState<string>("TODOS");
+
+  const MESES_PT = [
+    "JAN",
+    "FEV",
+    "MAR",
+    "ABR",
+    "MAI",
+    "JUN",
+    "JUL",
+    "AGO",
+    "SET",
+    "OUT",
+    "NOV",
+    "DEZ",
+  ];
+
+  const formatarAbaVencimento = (chaveAnoMes: string) => {
+    const [ano, mes] = chaveAnoMes.split("-");
+    return `${MESES_PT[parseInt(mes, 10) - 1]}/${ano.slice(2)}`;
+  };
 
   // Gestão de Capital e Garantia
   const [capitalInput, setCapitalInput] = useState<string>("425.000,00");
@@ -42,19 +61,32 @@ export default function DashboardMesaSheetDeslizante() {
         const ativos = Array.from(
           new Set(operacoes.map((op: any) => op.ativo)),
         );
-        const opcoes = Array.from(
-          new Set(operacoes.map((op: any) => op.codigo)),
-        );
 
         let capitalTravadoPuts = 0;
         let desembolsoObrigatorio = 0;
         let premioBruto = 0;
         let resultadoReal = 0;
+        let provisaoDarfTotal = 0;
+        let resultadoNaoRealizadoTotal = 0;
+        let resultadoRealizadoTotal = 0;
+        let qtdAbertas = 0;
+        let qtdZeradasPositivas = 0;
+        let qtdZeradasTotal = 0;
 
         operacoes.forEach((op: any) => {
+          provisaoDarfTotal += op.darf || 0;
+
           if (op.status === "Aberta") {
+            qtdAbertas += 1;
             premioBruto += op.premioTotalBruto;
             resultadoReal += op.resultadoBrutoReal;
+
+            // P&L não-realizado: prêmio recebido menos custo de recompra ao preço manual
+            if (op.cotacaoOpcao) {
+              resultadoNaoRealizadoTotal +=
+                op.premioTotalBruto - op.cotacaoOpcao * op.qtde;
+            }
+
             if (op.operacao.includes("Put")) {
               capitalTravadoPuts += op.valorExercEfetivoTotal;
               if (op.exercendo === "Sim")
@@ -62,8 +94,16 @@ export default function DashboardMesaSheetDeslizante() {
             }
           } else {
             resultadoReal += op.resultadoLiquido;
+            resultadoRealizadoTotal += op.resultadoLiquido;
+            qtdZeradasTotal += 1;
+            if (op.resultadoLiquido >= 0) qtdZeradasPositivas += 1;
           }
         });
+
+        const taxaSucesso =
+          qtdZeradasTotal > 0
+            ? (qtdZeradasPositivas / qtdZeradasTotal) * 100
+            : null;
 
         setData({
           operacoes,
@@ -71,10 +111,15 @@ export default function DashboardMesaSheetDeslizante() {
           desembolsoObrigatorio,
           premioBruto,
           resultadoReal,
+          provisaoDarfTotal,
+          resultadoNaoRealizadoTotal,
+          resultadoRealizadoTotal,
+          qtdAbertas,
+          qtdTotal: operacoes.length,
+          taxaSucesso,
         });
-        fetch(
-          `/api/market?ativos=${ativos.join(",")}&opcoes=${opcoes.join(",")}`,
-        )
+
+        fetch(`/api/market?ativos=${ativos.join(",")}`)
           .then((r) => r.json())
           .then(setMarket);
       });
@@ -100,7 +145,13 @@ export default function DashboardMesaSheetDeslizante() {
 
   const iniciarEdicao = (op: any) => {
     setIdEditando(op.id);
-    setEditForm({ qtde: op.qtde, strike: op.strike, status: op.status });
+    setEditForm({
+      qtde: op.qtde,
+      strike: op.strike,
+      status: op.status,
+      cotacaoOpcao: op.cotacaoOpcao ?? "",
+      vencimento: op.vencimento ?? "",
+    });
   };
 
   const handleSaveEdicao = async (id: string) => {
@@ -153,25 +204,6 @@ export default function DashboardMesaSheetDeslizante() {
     }
   };
 
-  const abrirSheetRolagem = (op: any) => {
-    setAtivoSelecionado(op.ativo);
-    setCarregandoGrade(true);
-    setGradeAtivo(null);
-    setVencimentoSelecionado("");
-
-    fetch(`/api/chain?ativo=${op.ativo}`)
-      .then((res) => res.json())
-      .then((resData) => {
-        setGradeAtivo(resData);
-        setCarregandoGrade(false);
-        const datas = Array.from(
-          new Set(resData.chain?.map((o: any) => o.vencimento)),
-        ) as string[];
-        if (datas.length > 0) setVencimentoSelecionado(datas[0]);
-      })
-      .catch(() => setCarregandoGrade(false));
-  };
-
   const obterGatilhoDecisao = (op: any, precoAtualAcao: number) => {
     if (op.status === "Zerada")
       return {
@@ -212,9 +244,9 @@ export default function DashboardMesaSheetDeslizante() {
     new Intl.NumberFormat("pt-BR", {
       style: "currency",
       currency: "BRL",
-    }).format(v);
+    }).format(v || 0);
   const fmtPct = (v: any) =>
-    v ? (typeof v === "string" && v.includes("%") ? v : `${v}%`) : "0,00信号";
+    v ? (typeof v === "string" && v.includes("%") ? v : `${v}%`) : "0,00%";
 
   const listaAtivosUnicos = [
     "TODOS",
@@ -223,28 +255,81 @@ export default function DashboardMesaSheetDeslizante() {
     ) as string[]),
   ];
 
-  const operacoesFiltradas =
-    data?.operacoes?.filter((op: any) => {
+  const operacoesFiltradas = useMemo(() => {
+    const buscaNormalizada = busca.trim().toUpperCase();
+
+    const filtradas = (data?.operacoes || []).filter((op: any) => {
       const precoAcaoReal = market.prices[op.ativo] || op.cotacaoAcao;
       const infoDecisao = obterGatilhoDecisao(op, precoAcaoReal);
+
+      const bateBusca =
+        !buscaNormalizada ||
+        op.codigo.toUpperCase().includes(buscaNormalizada) ||
+        op.ativo.toUpperCase().includes(buscaNormalizada);
+
+      const bateVencimento =
+        abaVencimento === "TODOS" ||
+        (op.vencimento && op.vencimento.slice(0, 7) === abaVencimento);
+
       return (
         (filtroAtivo === "TODOS" || op.ativo === filtroAtivo) &&
         (filtroTipo === "TODOS" ||
           (filtroTipo === "CALL" && op.operacao.includes("Call")) ||
           (filtroTipo === "PUT" && op.operacao.includes("Put"))) &&
-        (filtroDecisao === "TODOS" || infoDecisao.texto === filtroDecisao)
+        (filtroDecisao === "TODOS" || infoDecisao.texto === filtroDecisao) &&
+        (filtroStatus === "TODOS" || op.status === filtroStatus) &&
+        bateVencimento &&
+        bateBusca
       );
-    }) || [];
+    });
 
-  const listaVencimentosGrade = gradeAtivo
-    ? (Array.from(
-        new Set(gradeAtivo.chain?.map((o: any) => o.vencimento)),
-      ) as string[])
-    : [];
-  const opcoesGradeFiltradas =
-    gradeAtivo?.chain?.filter(
-      (o: any) => o.vencimento === vencimentoSelecionado,
-    ) || [];
+    const ordenadas = [...filtradas].sort((a: any, b: any) => {
+      switch (ordenacao) {
+        case "DATA_ANTIGA":
+          return a.data.localeCompare(b.data);
+        case "MAIOR_PREMIO":
+          return b.premioTotalBruto - a.premioTotalBruto;
+        case "MAIOR_RESULTADO":
+          return (
+            (b.status === "Zerada"
+              ? b.resultadoLiquido
+              : b.resultadoBrutoReal) -
+            (a.status === "Zerada" ? a.resultadoLiquido : a.resultadoBrutoReal)
+          );
+        case "MENOR_RESULTADO":
+          return (
+            (a.status === "Zerada"
+              ? a.resultadoLiquido
+              : a.resultadoBrutoReal) -
+            (b.status === "Zerada" ? b.resultadoLiquido : b.resultadoBrutoReal)
+          );
+        case "DATA_RECENTE":
+        default:
+          return b.data.localeCompare(a.data);
+      }
+    });
+
+    return ordenadas;
+  }, [
+    data,
+    market,
+    filtroAtivo,
+    filtroTipo,
+    filtroDecisao,
+    filtroStatus,
+    abaVencimento,
+    busca,
+    ordenacao,
+  ]);
+
+  const abasVencimento = useMemo(() => {
+    const chaves = new Set<string>();
+    (data?.operacoes || []).forEach((op: any) => {
+      if (op.vencimento) chaves.add(op.vencimento.slice(0, 7));
+    });
+    return Array.from(chaves).sort();
+  }, [data]);
+
   const margemDisponivel = tesouroSelic - (data?.capitalTravadoPuts ?? 0);
 
   return (
@@ -256,7 +341,7 @@ export default function DashboardMesaSheetDeslizante() {
             Mesa Automatizada de Renda
           </h1>
           <p className="text-[11px] text-slate-500 uppercase tracking-widest mt-1">
-            Clique para abrir o painel técnico de ajustes e a matriz de rolagem
+            Clique em uma posição para ver detalhes e editar
           </p>
         </div>
         <button
@@ -267,8 +352,34 @@ export default function DashboardMesaSheetDeslizante() {
         </button>
       </div>
 
-      {/* Grid de Alocação */}
-      {/* Grid de Alocação */}
+      {/* Abas de Vencimento */}
+      <div className="flex gap-1 border-b border-slate-200">
+        <button
+          onClick={() => setAbaVencimento("TODOS")}
+          className={`px-4 py-2 text-xs font-medium uppercase tracking-wide border-b-2 transition-colors ${
+            abaVencimento === "TODOS"
+              ? "border-slate-900 text-slate-900"
+              : "border-transparent text-slate-400 hover:text-slate-600"
+          }`}
+        >
+          Todos os Vencimentos
+        </button>
+        {abasVencimento.map((chave) => (
+          <button
+            key={chave}
+            onClick={() => setAbaVencimento(chave)}
+            className={`px-4 py-2 text-xs font-medium uppercase tracking-wide border-b-2 transition-colors ${
+              abaVencimento === chave
+                ? "border-slate-900 text-slate-900"
+                : "border-transparent text-slate-400 hover:text-slate-600"
+            }`}
+          >
+            {formatarAbaVencimento(chave)}
+          </button>
+        ))}
+      </div>
+
+      {/* Grid de Alocação de Capital */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
         <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
           <label className="text-[10px] text-slate-400 font-medium tracking-wider uppercase block">
@@ -318,12 +429,80 @@ export default function DashboardMesaSheetDeslizante() {
         </div>
       </div>
 
+      {/* Grid de Métricas de Performance */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-5">
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <p className="text-[10px] text-slate-400 font-medium tracking-wider uppercase">
+            Prêmio Recebido (Abertas)
+          </p>
+          <p className="text-sm font-mono font-medium text-sky-700 mt-1">
+            {fmt(data?.premioBruto ?? 0)}
+          </p>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <p className="text-[10px] text-slate-400 font-medium tracking-wider uppercase">
+            P&L Não-Realizado
+          </p>
+          <p
+            className={`text-sm font-mono font-medium mt-1 ${(data?.resultadoNaoRealizadoTotal ?? 0) >= 0 ? "text-emerald-700" : "text-rose-700"}`}
+          >
+            {fmt(data?.resultadoNaoRealizadoTotal ?? 0)}
+          </p>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <p className="text-[10px] text-slate-400 font-medium tracking-wider uppercase">
+            P&L Realizado
+          </p>
+          <p
+            className={`text-sm font-mono font-medium mt-1 ${(data?.resultadoRealizadoTotal ?? 0) >= 0 ? "text-emerald-700" : "text-rose-700"}`}
+          >
+            {fmt(data?.resultadoRealizadoTotal ?? 0)}
+          </p>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <p className="text-[10px] text-slate-400 font-medium tracking-wider uppercase">
+            Provisão DARF
+          </p>
+          <p className="text-sm font-mono font-medium text-rose-700 mt-1">
+            {fmt(data?.provisaoDarfTotal ?? 0)}
+          </p>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <p className="text-[10px] text-slate-400 font-medium tracking-wider uppercase">
+            Taxa de Sucesso
+          </p>
+          <p className="text-sm font-mono font-medium text-slate-700 mt-1">
+            {data?.taxaSucesso !== null && data?.taxaSucesso !== undefined
+              ? `${data.taxaSucesso.toFixed(1)}%`
+              : "—"}
+          </p>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <p className="text-[10px] text-slate-400 font-medium tracking-wider uppercase">
+            Posições Abertas
+          </p>
+          <p className="text-sm font-mono font-medium text-slate-700 mt-1">
+            {data?.qtdAbertas ?? 0}{" "}
+            <span className="text-slate-400 font-normal">
+              / {data?.qtdTotal ?? 0}
+            </span>
+          </p>
+        </div>
+      </div>
+
       {/* Filtros */}
-      <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex flex-wrap gap-4 items-center">
+      <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex flex-wrap gap-3 items-center">
+        <input
+          type="text"
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          placeholder="Buscar por código ou ativo..."
+          className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-700 focus:outline-none min-w-[200px]"
+        />
         <select
           value={filtroAtivo}
           onChange={(e) => setFiltroAtivo(e.target.value)}
-          className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-700 font-medium focus:outline-none min-w-[140px]"
+          className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-700 font-medium focus:outline-none min-w-[120px]"
         >
           {listaAtivosUnicos.map((at) => (
             <option key={at} value={at}>
@@ -341,6 +520,15 @@ export default function DashboardMesaSheetDeslizante() {
           <option value="PUT">PUT (Venda de Put)</option>
         </select>
         <select
+          value={filtroStatus}
+          onChange={(e) => setFiltroStatus(e.target.value)}
+          className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-700 font-medium focus:outline-none min-w-[120px]"
+        >
+          <option value="TODOS">TODOS STATUS</option>
+          <option value="Aberta">ABERTAS</option>
+          <option value="Zerada">ZERADAS</option>
+        </select>
+        <select
           value={filtroDecisao}
           onChange={(e) => setFiltroDecisao(e.target.value)}
           className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-700 font-medium focus:outline-none min-w-[180px]"
@@ -351,6 +539,21 @@ export default function DashboardMesaSheetDeslizante() {
           <option value="AVALIAR ROLAGEM">AVALIAR ROLAGEM</option>
           <option value="DEFENDER / RECOMPRA">DEFENDER / RECOMPRA</option>
         </select>
+        <select
+          value={ordenacao}
+          onChange={(e) => setOrdenacao(e.target.value)}
+          className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-700 font-medium focus:outline-none min-w-[160px]"
+        >
+          <option value="DATA_RECENTE">MAIS RECENTES</option>
+          <option value="DATA_ANTIGA">MAIS ANTIGAS</option>
+          <option value="MAIOR_PREMIO">MAIOR PRÊMIO</option>
+          <option value="MAIOR_RESULTADO">MAIOR RESULTADO</option>
+          <option value="MENOR_RESULTADO">MENOR RESULTADO</option>
+        </select>
+        <span className="text-[11px] text-slate-400 font-mono ml-auto">
+          {operacoesFiltradas.length} de {data?.operacoes?.length ?? 0}{" "}
+          operações
+        </span>
       </div>
 
       {/* Grade de Cards */}
@@ -358,9 +561,14 @@ export default function DashboardMesaSheetDeslizante() {
         {operacoesFiltradas.map((op: any) => {
           const precoAcaoReal = market.prices[op.ativo] || op.cotacaoAcao;
           const fonteOriginal = market.fontes[op.ativo] || "estatico";
-          const gatilho = obterGatilhoDecisao(op, market.prices[op.ativo]);
+          const gatilho = obterGatilhoDecisao(op, precoAcaoReal);
           const expandido = idExpandido === op.id;
           const editandoEste = idEditando === op.id;
+
+          const resultadoNaoRealizado =
+            op.status === "Aberta" && op.cotacaoOpcao
+              ? op.premioTotalBruto - op.cotacaoOpcao * op.qtde
+              : null;
 
           return (
             <div
@@ -369,10 +577,7 @@ export default function DashboardMesaSheetDeslizante() {
             >
               {/* Capa */}
               <div
-                onClick={() => {
-                  setIdExpandido(expandido ? null : op.id);
-                  abrirSheetRolagem(op);
-                }}
+                onClick={() => setIdExpandido(expandido ? null : op.id)}
                 className="py-4 px-6 flex flex-wrap lg:flex-nowrap justify-between items-center gap-6 cursor-pointer select-none"
               >
                 <div className="flex items-center gap-6">
@@ -432,16 +637,28 @@ export default function DashboardMesaSheetDeslizante() {
                   </div>
                   <div>
                     <span className="text-[10px] text-slate-400 block">
-                      Resultado Líquido
+                      {op.status === "Zerada"
+                        ? "Resultado Líquido"
+                        : "P&L Não-Realizado"}
                     </span>
                     <span
-                      className={`text-sm font-mono font-medium mt-0.5 block ${op.status === "Zerada" ? (op.resultadoLiquido >= 0 ? "text-emerald-600" : "text-rose-600") : op.resultadoBrutoReal >= 0 ? "text-emerald-600" : "text-rose-600"}`}
-                    >
-                      {fmt(
+                      className={`text-sm font-mono font-medium mt-0.5 block ${
                         op.status === "Zerada"
-                          ? op.resultadoLiquido
-                          : op.resultadoBrutoReal,
-                      )}
+                          ? op.resultadoLiquido >= 0
+                            ? "text-emerald-600"
+                            : "text-rose-600"
+                          : resultadoNaoRealizado !== null
+                            ? resultadoNaoRealizado >= 0
+                              ? "text-emerald-600"
+                              : "text-rose-600"
+                            : "text-slate-400"
+                      }`}
+                    >
+                      {op.status === "Zerada"
+                        ? fmt(op.resultadoLiquido)
+                        : resultadoNaoRealizado !== null
+                          ? fmt(resultadoNaoRealizado)
+                          : "sem preço"}
                     </span>
                   </div>
                 </div>
@@ -452,7 +669,9 @@ export default function DashboardMesaSheetDeslizante() {
                   >
                     {gatilho.texto}
                   </span>
-                  <span className="text-xs text-slate-400">ANALISAR ↗</span>
+                  <span className="text-xs text-slate-400">
+                    {expandido ? "FECHAR" : "DETALHES"}
+                  </span>
                 </div>
               </div>
 
@@ -515,15 +734,34 @@ export default function DashboardMesaSheetDeslizante() {
                     </div>
                     <div>
                       <span className="text-[10px] text-slate-400 block uppercase font-sans font-medium">
-                        Preço Opção
+                        Preço Opção (Manual)
                       </span>
-                      <span className="text-purple-600 font-medium mt-0.5 block">
-                        {fmt(market.prices[op.codigo] || op.cotacaoOpcao)}
-                      </span>
+                      {editandoEste ? (
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="0,00"
+                          value={editForm.cotacaoOpcao}
+                          onChange={(e) =>
+                            setEditForm({
+                              ...editForm,
+                              cotacaoOpcao:
+                                e.target.value === ""
+                                  ? ""
+                                  : parseFloat(e.target.value),
+                            })
+                          }
+                          className="mt-0.5 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-slate-800 w-24"
+                        />
+                      ) : (
+                        <span className="text-purple-600 font-medium mt-0.5 block">
+                          {op.cotacaoOpcao ? fmt(op.cotacaoOpcao) : "—"}
+                        </span>
+                      )}
                     </div>
                     <div>
                       <span className="text-[10px] text-slate-400 block uppercase font-sans font-medium">
-                        Livro Livro
+                        Status
                       </span>
                       {editandoEste ? (
                         <select
@@ -539,6 +777,32 @@ export default function DashboardMesaSheetDeslizante() {
                       ) : (
                         <span className="text-sky-600 font-sans mt-0.5 block">
                           {op.status}
+                        </span>
+                      )}
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-slate-400 block uppercase font-sans font-medium">
+                        Vencimento
+                      </span>
+                      {editandoEste ? (
+                        <input
+                          type="date"
+                          value={editForm.vencimento}
+                          onChange={(e) =>
+                            setEditForm({
+                              ...editForm,
+                              vencimento: e.target.value,
+                            })
+                          }
+                          className="mt-0.5 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-slate-800 w-32"
+                        />
+                      ) : (
+                        <span className="text-slate-700 mt-0.5 block">
+                          {op.vencimento
+                            ? new Date(
+                                op.vencimento + "T00:00:00",
+                              ).toLocaleDateString("pt-BR")
+                            : "—"}
                         </span>
                       )}
                     </div>
@@ -591,86 +855,13 @@ export default function DashboardMesaSheetDeslizante() {
             </div>
           );
         })}
-      </div>
 
-      {/* SHEET LATERAL COBERTO */}
-      {ativoSelecionado && (
-        <div className="fixed inset-0 z-40 flex justify-end bg-slate-900/20 backdrop-blur-sm">
-          <div className="flex-1" onClick={() => setAtivoSelecionado(null)} />
-          <div className="w-full max-w-md bg-white h-full shadow-2xl border-l border-slate-200 p-6 flex flex-col gap-4 animate-slide-in overflow-y-auto">
-            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="text-xs font-semibold text-slate-900 uppercase tracking-wide">
-                  Mesa de Rolagem: {ativoSelecionado}
-                </h3>
-                <p className="text-[11px] text-sky-600 font-mono mt-1">
-                  Preço À Vista Real:{" "}
-                  {market.prices[ativoSelecionado]
-                    ? fmt(market.prices[ativoSelecionado])
-                    : "..."}
-                </p>
-              </div>
-              <button
-                onClick={() => setAtivoSelecionado(null)}
-                className="text-slate-400 hover:text-slate-700 text-xl font-sans"
-              >
-                ×
-              </button>
-            </div>
-            {carregandoGrade ? (
-              <div className="text-center mt-24 font-mono text-xs text-slate-400 animate-pulse uppercase tracking-wider">
-                Consultando séries temporais no Opções.net...
-              </div>
-            ) : (
-              <div className="flex flex-col gap-4 h-full">
-                <div className="flex border-b border-slate-200 text-xs">
-                  {listaVencimentosGrade.map((venc) => (
-                    <button
-                      key={venc}
-                      onClick={() => setVencimentoSelecionado(venc)}
-                      className={`flex-1 pb-2 font-medium transition-all text-center border-b-2 uppercase tracking-tight ${vencimentoSelecionado === venc ? "border-slate-800 text-slate-900" : "border-transparent text-slate-400 hover:text-slate-600"}`}
-                    >
-                      {venc.split("/")[1] ? `Mês ${venc.split("/")[1]}` : venc}
-                    </button>
-                  ))}
-                </div>
-                <div className="flex flex-col gap-2 overflow-y-auto pr-1">
-                  {opcoesGradeFiltradas.slice(0, 20).map((opcao: any) => (
-                    <div
-                      key={opcao.ticker}
-                      className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex justify-between items-center hover:border-slate-300 transition-all"
-                    >
-                      <div>
-                        <div className="flex gap-2 items-center">
-                          <span className="font-mono text-xs font-medium text-amber-800">
-                            {opcao.ticker}
-                          </span>
-                          <span
-                            className={`text-[9px] font-medium px-1 rounded ${opcao.tipo === "CALL" ? "bg-purple-100 text-purple-700" : "bg-blue-100 text-blue-700"}`}
-                          >
-                            {opcao.tipo}
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-slate-500 mt-1 font-mono">
-                          Strike: {fmt(opcao.strike)}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-xs font-medium font-mono text-emerald-700">
-                          {fmt(opcao.precoOpcao)}
-                        </p>
-                        <p className="text-[9px] text-slate-400 font-mono mt-0.5">
-                          Yield Op: {opcao.premioRelativo}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+        {operacoesFiltradas.length === 0 && (
+          <div className="text-center py-12 text-sm text-slate-400 font-mono">
+            Nenhuma operação encontrada com os filtros atuais.
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* MODAL DE UPLOAD DE NOTA */}
       {modalUploadAberto && (
