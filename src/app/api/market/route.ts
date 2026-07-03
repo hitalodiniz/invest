@@ -24,23 +24,20 @@ const BRAPI_BASE = "https://brapi.dev/api/quote";
 async function buscarPrecosAcoes(
   tickers: string[],
 ): Promise<Record<string, number>> {
-  // 1. Filtra removendo espaços extras e eliminando itens vazios ou nulos
   const tickersValidos = tickers
     .map((t) => t.trim().toUpperCase())
     .filter((t) => t.length > 0);
 
-  // 2. Se não sobrar nenhum ativo válido, aborta antes de chamar a API
   if (tickersValidos.length === 0) return {};
 
   const token = process.env.BRAPI_TOKEN;
 
-  // 3. Monta a URL estritamente com os tickers limpos
-  const url = `${BRAPI_BASE}/${tickersValidos.join(",")}${token ? `?token=${token}` : ""}`;
+  // CORREÇÃO: Passa a lista no parâmetro ?tickers= e concatena o token com &
+  const url = `${BRAPI_BASE}?tickers=${tickersValidos.join(",")}${token ? `&token=${token}` : ""}`;
 
   const res = await fetch(url, { next: { revalidate: 15 } });
 
   if (!res.ok) {
-    // Adiciona log para sabermos exatamente qual URL falhou se o erro persistir
     console.error(`Falha na Brapi. URL chamada: ${url}`);
     throw new Error(`brapi.dev respondeu ${res.status}`);
   }
