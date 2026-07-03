@@ -8,7 +8,7 @@
 
 import { NextResponse } from "next/server";
 import { extractText, getDocumentProxy } from "unpdf";
-import { prisma } from "@/lib/db";
+import { prisma } from "../../lib/db";
 
 async function extrairTextoPdf(
   pdfBuffer: Buffer,
