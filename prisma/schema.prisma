@@ -1,8 +1,38 @@
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 generator client {
   provider = "prisma-client-js"
+}
+
+model Operacao {
+  id                     String   @id
+  data                   String
+  ativo                  String
+  operacao               String
+  tipo                   String
+  codigo                 String
+  qtde                   Int
+  cotacaoAcao            Float
+  strike                 Float
+  premioUnInicial        Float
+  premioTotalBruto       Float
+  distanciaStrike        String
+  exercendo              String
+  cotacaoOpcao           Float
+  lucroCapturado         String
+  custoRecompraTotal     Float
+  resultadoBrutoReal     Float
+  valorExercicioUn       Float
+  valorExercEfetivoTotal Float
+  darf                   Float?   @default(0.0)
+  resultadoLiquido       Float?   @default(0.0)
+  dataEncerramento       String?
+  status                 String   @default("Aberta")
+}
+
+model NotasProcessadas {
+  id              String @id
+  data_importacao String
 }
