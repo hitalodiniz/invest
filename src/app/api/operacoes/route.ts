@@ -1,28 +1,22 @@
 // src/app/api/operacoes/route.ts
-import { NextResponse } from "next/server";
-import Database from "better-sqlite3";
-import path from "path";
+//
+// Reescrita: antes abria better-sqlite3 direto em prisma/dev.db a cada request.
+// Agora fala com o Neon via Prisma Client (lib/db.ts). Mesma whitelist de campos
+// editáveis e mesmo contrato de resposta que a versão antiga, pra não quebrar o
+// front-end que já consome essa rota.
 
-function getDb() {
-  const dbPath = path.join(process.cwd(), "prisma/dev.db");
-  return new Database(dbPath);
-}
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
 
 export async function GET() {
   try {
-    const db = getDb();
-    const operacoes = db
-      .prepare("SELECT * FROM Operacao ORDER BY data DESC")
-      .all();
-    db.close();
-
+    const operacoes = await prisma.operacao.findMany({
+      orderBy: { data: "desc" },
+    });
     return NextResponse.json(operacoes);
   } catch (error: any) {
     return NextResponse.json(
-      {
-        error: "Erro ao buscar operações do banco local",
-        details: error.message,
-      },
+      { error: "Erro ao buscar operações no Neon", details: error.message },
       { status: 500 },
     );
   }
@@ -38,8 +32,27 @@ const CAMPOS_EDITAVEIS = [
   "vencimento",
 ] as const;
 
+// Tipos esperados pelo schema Postgres — o SQLite antigo coagia tipo automaticamente
+// no bind de parâmetros; o Postgres via Prisma é estrito, então convertemos aqui.
+const TIPO_CAMPO: Record<
+  (typeof CAMPOS_EDITAVEIS)[number],
+  "int" | "float" | "string"
+> = {
+  qtde: "int",
+  strike: "float",
+  cotacaoOpcao: "float",
+  status: "string",
+  vencimento: "string",
+};
+
+function coagirValor(campo: (typeof CAMPOS_EDITAVEIS)[number], valor: any) {
+  const tipo = TIPO_CAMPO[campo];
+  if (tipo === "int") return parseInt(valor, 10);
+  if (tipo === "float") return parseFloat(valor);
+  return valor;
+}
+
 export async function PUT(request: Request) {
-  let db;
   try {
     const body = await request.json();
     const { id } = body;
@@ -62,37 +75,30 @@ export async function PUT(request: Request) {
       );
     }
 
-    const setClause = camposParaAtualizar
-      .map((campo) => `"${campo}" = @${campo}`)
-      .join(", ");
-
-    db = getDb();
-    const stmt = db.prepare(
-      `UPDATE "Operacao" SET ${setClause} WHERE id = @id`,
-    );
-
-    const params: Record<string, any> = { id };
+    const data: Record<string, any> = {};
     for (const campo of camposParaAtualizar) {
-      params[campo] = body[campo];
+      data[campo] = coagirValor(campo, body[campo]);
     }
 
-    const resultado = stmt.run(params);
-    db.close();
-
-    if (resultado.changes === 0) {
-      return NextResponse.json(
-        { error: `Nenhuma operação encontrada com id ${id}.` },
-        { status: 404 },
-      );
-    }
+    const atualizada = await prisma.operacao.update({
+      where: { id },
+      data,
+    });
 
     return NextResponse.json({
       success: true,
       id,
       atualizado: camposParaAtualizar,
+      operacao: atualizada,
     });
   } catch (error: any) {
-    if (db) db.close();
+    // P2025 = registro não encontrado (equivalente ao "changes === 0" do SQLite)
+    if (error.code === "P2025") {
+      return NextResponse.json(
+        { error: "Operação não encontrada." },
+        { status: 404 },
+      );
+    }
     return NextResponse.json(
       { error: "Erro ao atualizar operação.", details: error.message },
       { status: 500 },
@@ -101,7 +107,6 @@ export async function PUT(request: Request) {
 }
 
 export async function DELETE(request: Request) {
-  let db;
   try {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
@@ -113,20 +118,15 @@ export async function DELETE(request: Request) {
       );
     }
 
-    db = getDb();
-    const resultado = db.prepare('DELETE FROM "Operacao" WHERE id = ?').run(id);
-    db.close();
-
-    if (resultado.changes === 0) {
+    await prisma.operacao.delete({ where: { id } });
+    return NextResponse.json({ success: true, id });
+  } catch (error: any) {
+    if (error.code === "P2025") {
       return NextResponse.json(
-        { error: `Nenhuma operação encontrada com id ${id}.` },
+        { error: "Operação não encontrada." },
         { status: 404 },
       );
     }
-
-    return NextResponse.json({ success: true, id });
-  } catch (error: any) {
-    if (db) db.close();
     return NextResponse.json(
       { error: "Erro ao deletar operação.", details: error.message },
       { status: 500 },

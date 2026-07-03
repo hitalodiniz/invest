@@ -1,8 +1,14 @@
 // src/app/api/upload-nota/route.ts
+//
+// Reescrita: a extração de texto do PDF e o regex de parsing das linhas de
+// negociação continuam idênticos. O que mudou é só a persistência — antes
+// abria better-sqlite3 em prisma/dev.db, agora grava no Neon via Prisma,
+// numa transação (equivalente ao db.transaction do SQLite): ou insere as
+// operações + o controle de nota processada juntos, ou nada é gravado.
+
 import { NextResponse } from "next/server";
-import Database from "better-sqlite3";
-import path from "path";
 import { extractText, getDocumentProxy } from "unpdf";
+import { prisma } from "@/lib/db";
 
 async function extrairTextoPdf(
   pdfBuffer: Buffer,
@@ -14,7 +20,6 @@ async function extrairTextoPdf(
 }
 
 export async function POST(request: Request) {
-  let db;
   try {
     const formData = await request.formData();
     const file = formData.get("file") as File;
@@ -50,7 +55,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // 3. Captura do Número Único da Nota (Nr. nota) para evitar duplicidade
+    // Captura do Número Único da Nota (Nr. nota) para evitar duplicidade
     const numeroNotaMatch = text.match(/Nr\.\s*nota\s*([\d]+)/i);
     const numeroNota = numeroNotaMatch ? numeroNotaMatch[1] : null;
 
@@ -63,16 +68,12 @@ export async function POST(request: Request) {
       );
     }
 
-    // 4. Conexão com o Banco Local e Verificação Direta de Duplicidade
-    const dbPath = path.join(process.cwd(), "prisma/dev.db");
-    db = new Database(dbPath);
-
-    const notaExistente = db
-      .prepare('SELECT id FROM "NotasProcessadas" WHERE id = ?')
-      .get(numeroNota);
+    // Verificação de duplicidade direto no Neon
+    const notaExistente = await prisma.notasProcessadas.findUnique({
+      where: { id: numeroNota },
+    });
 
     if (notaExistente) {
-      db.close();
       return NextResponse.json(
         {
           error: `A Nota de Negociação nº ${numeroNota} já foi importada anteriormente no sistema.`,
@@ -81,12 +82,12 @@ export async function POST(request: Request) {
       );
     }
 
-    // 5. Tratamento do Metadado Global de Data do Pregão
+    // Data do pregão
     let dataPregao = "";
     const dataMatch = text.match(/Data\s+preg[ãa]o\s+(\d{2}\/\d{2}\/\d{4})/i);
     if (dataMatch) dataPregao = dataMatch[1];
 
-    // 6. Parse das linhas de negociação
+    // Parse das linhas de negociação (regex idêntico ao original)
     const operacoes: any[] = [];
     const linhaRegex =
       /(?<cv>[CV])\s+(?<mercado>OPCAO\s+DE\s+COMPRA|OPCAO\s+DE\s+VENDA|VISTA|EXERC\s+OPC)\s+.*?\s+(?<codigo>[A-Z]{4}[A-Z0-9]{2,5})\s+.*?\s+(?<qtde>[\d.]+)\s+(?<preco>[\d,.]+)\s+(?<total>[\d,.]+)\s+(?<dc>[DC])/gi;
@@ -139,34 +140,21 @@ export async function POST(request: Request) {
       });
     }
 
-    // 7. Persistência Atômica via Transação SQL no SQLite
-    const insertOperacao = db.prepare(`
-      INSERT INTO "Operacao" (
-        id, data, ativo, operacao, tipo, codigo, qtde, cotacaoAcao, strike, 
-        premioUnInicial, premioTotalBruto, distanciaStrike, exercendo, 
-        cotacaoOpcao, lucroCapturado, custoRecompraTotal, resultadoBrutoReal, 
-        valorExercicioUn, valorExercEfetivoTotal, darf, resultadoLiquido, status
-      ) VALUES (
-        @id, @data, @ativo, @operacao, @tipo, @codigo, @qtde, @cotacaoAcao, @strike, 
-        @premioUnInicial, @premioTotalBruto, @distanciaStrike, @exercendo, 
-        @cotacaoOpcao, @lucroCapturado, @custoRecompraTotal, @resultadoBrutoReal, 
-        @valorExercicioUn, @valorExercEfetivoTotal, @darf, @resultadoLiquido, @status
-      )
-    `);
+    if (operacoes.length === 0) {
+      return NextResponse.json(
+        { error: "Nenhuma linha de negociação reconhecida no PDF." },
+        { status: 422 },
+      );
+    }
 
-    const insertNotaControle = db.prepare(
-      'INSERT INTO "NotasProcessadas" (id, data_importacao) VALUES (?, ?)',
-    );
-
-    const transacaoExecutar = db.transaction((listaOps, idNota, timestamp) => {
-      for (const op of listaOps) {
-        insertOperacao.run(op);
-      }
-      insertNotaControle.run(idNota, timestamp);
-    });
-
-    transacaoExecutar(operacoes, numeroNota, new Date().toISOString());
-    db.close();
+    // Gravação atômica: mesma garantia da transação do SQLite, agora no Postgres.
+    // Se qualquer INSERT falhar, tudo é revertido — inclusive o registro de controle.
+    await prisma.$transaction([
+      prisma.operacao.createMany({ data: operacoes }),
+      prisma.notasProcessadas.create({
+        data: { id: numeroNota, data_importacao: new Date().toISOString() },
+      }),
+    ]);
 
     return NextResponse.json({
       success: true,
@@ -174,9 +162,8 @@ export async function POST(request: Request) {
       linhasInseridas: operacoes.length,
     });
   } catch (error: any) {
-    if (db) db.close();
     return NextResponse.json(
-      { error: "Erro de processamento SQL: " + error.message },
+      { error: "Erro de processamento: " + error.message },
       { status: 500 },
     );
   }
