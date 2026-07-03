@@ -31,25 +31,33 @@ async function buscarPrecosAcoes(
   if (tickersValidos.length === 0) return {};
 
   const token = process.env.BRAPI_TOKEN;
-
-  // CORREÇÃO: Passa a lista no parâmetro ?tickers= e concatena o token com &
-  const url = `${BRAPI_BASE}?tickers=${tickersValidos.join(",")}${token ? `&token=${token}` : ""}`;
-
-  const res = await fetch(url, { next: { revalidate: 15 } });
-
-  if (!res.ok) {
-    console.error(`Falha na Brapi. URL chamada: ${url}`);
-    throw new Error(`brapi.dev respondeu ${res.status}`);
-  }
-
-  const json = await res.json();
-
   const precos: Record<string, number> = {};
-  for (const item of json.results || []) {
-    if (item.symbol && typeof item.regularMarketPrice === "number") {
-      precos[item.symbol] = item.regularMarketPrice;
-    }
-  }
+
+  // Dispara as requisições em paralelo, respeitando o limite de 1 ativo por chamada do plano free
+  await Promise.all(
+    tickersValidos.map(async (ticker) => {
+      try {
+        const url = `${BRAPI_BASE}/${ticker}${token ? `?token=${token}` : ""}`;
+        const res = await fetch(url, { next: { revalidate: 15 } });
+
+        if (!res.ok) return; // Se um ativo falhar, apenas ignora e continua os outros
+
+        const json = await res.json();
+        const item = json.results?.[0];
+
+        if (
+          item &&
+          item.symbol &&
+          typeof item.regularMarketPrice === "number"
+        ) {
+          precos[item.symbol] = item.regularMarketPrice;
+        }
+      } catch (err) {
+        console.error(`Erro ao buscar ativo individual ${ticker}:`, err);
+      }
+    }),
+  );
+
   return precos;
 }
 
