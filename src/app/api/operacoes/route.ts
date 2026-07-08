@@ -5,8 +5,8 @@
 // editáveis e mesmo contrato de resposta que a versão antiga, pra não quebrar o
 // front-end que já consome essa rota.
 
+import { prisma } from "@/app/lib/db";
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
 
 export async function GET() {
   try {

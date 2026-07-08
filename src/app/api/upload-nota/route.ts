@@ -15,9 +15,9 @@
 // o unpdf lineariza essa nota com o VALOR colado ANTES do rótulo, sem espaço
 // (ex.: "0,08Taxa de liquidação D"), diferente do que a ordem visual sugere.
 
+import { prisma } from "@/app/lib/db";
 import { NextResponse } from "next/server";
 import { extractText, getDocumentProxy } from "unpdf";
-import { prisma } from "@/lib/db";
 
 async function extrairTextoPdf(
   pdfBuffer: Buffer,
