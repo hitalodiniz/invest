@@ -2,6 +2,9 @@
 import { prisma } from "@/app/lib/db";
 import { NextResponse } from "next/server";
 
+// Impede que o Next.js tente conectar ao Neon no momento do deploy/build
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   try {
     const notas = await prisma.notasProcessadas.findMany({
