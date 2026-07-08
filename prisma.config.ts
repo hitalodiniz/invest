@@ -32,9 +32,17 @@ if (!process.env.DATABASE_URL) {
   );
 }
 
+// Altere apenas o final do arquivo prisma.config.ts:
+
+const baseDbUrl = process.env.DATABASE_URL;
+// Se a URL já não contiver parâmetros, adiciona com '?'; se já contiver, adiciona com '&'
+const dbUrlWithTimeout = baseDbUrl.includes("?")
+  ? `${baseDbUrl}&connect_timeout=30`
+  : `${baseDbUrl}?connect_timeout=30`;
+
 export default defineConfig({
   schema: "prisma/schema.prisma",
   datasource: {
-    url: process.env.DATABASE_URL,
+    url: dbUrlWithTimeout,
   },
 });
