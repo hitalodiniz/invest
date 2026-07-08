@@ -1,18 +1,16 @@
-// app/lib/db.ts
+// src/app/lib/db.ts
 import { PrismaClient } from "@prisma/client";
 import { Pool, neonConfig } from "@neondatabase/serverless";
 import { PrismaNeon } from "@prisma/adapter-neon";
+
+// Força o Neon a trafegar via requisições HTTP normais no ambiente Edge/Serverless da Vercel
+neonConfig.fetchConnectionCache = true;
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 let prismaInstance: PrismaClient;
 
 if (process.env.DATABASE_URL) {
-  // Evita o import do 'ws' atribuindo diretamente o WebSocket global se disponível
-  if (typeof globalThis.WebSocket !== "undefined") {
-    neonConfig.webSocketConstructor = globalThis.WebSocket;
-  }
-
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   const adapter = new PrismaNeon(pool as any);
 

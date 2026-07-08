@@ -14,7 +14,7 @@
 // Regexes de taxas validados contra uma nota real (139711018, 07/07/2026):
 // o unpdf lineariza essa nota com o VALOR colado ANTES do rótulo, sem espaço
 // (ex.: "0,08Taxa de liquidação D"), diferente do que a ordem visual sugere.
-
+export const dynamic = "force-dynamic";
 import { prisma } from "@/app/lib/db";
 import { NextResponse } from "next/server";
 import { extractText, getDocumentProxy } from "unpdf";
