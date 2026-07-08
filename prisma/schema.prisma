@@ -9,6 +9,7 @@ generator client {
 model Operacao {
   id                     String   @id
   data                   String
+  vencimento             String? // YYYY-MM-DD — antes era só um ALTER TABLE solto no SQLite
   ativo                  String
   operacao               String
   tipo                   String
@@ -30,9 +31,42 @@ model Operacao {
   resultadoLiquido       Float?   @default(0.0)
   dataEncerramento       String?
   status                 String   @default("Aberta")
+
+  // Rastreabilidade: qual nota abriu e qual nota fechou essa posição
+  numeroNotaAbertura   String?
+  numeroNotaFechamento String?
+  // Custos rateados proporcionalmente ao valor desta operação dentro da nota
+  // (liquidação + registro + emolumentos, sem contar IRRF)
+  custosRateados       Float?  @default(0.0)
+  // true quando uma recompra chegou sem posição aberta correspondente —
+  // fica sinalizado pra você revisar manualmente
+  precisaRevisao       Boolean @default(false)
 }
 
+// Um registro por nota de negociação importada — guarda o resumo financeiro
+// completo (taxas, IRRF, líquido) pra consulta/auditoria, além de servir de
+// trava de duplicidade (já existia antes, só ganhou mais colunas).
 model NotasProcessadas {
-  id              String @id
+  id              String @id // número da nota
   data_importacao String
+  dataPregao      String?
+  corretora       String?
+
+  valorLiquidoOperacoes Float? @default(0.0)
+  taxaLiquidacao        Float? @default(0.0)
+  taxaRegistro          Float? @default(0.0)
+  totalCBLC             Float? @default(0.0)
+  taxaTermoOpcoes       Float? @default(0.0)
+  taxaANA               Float? @default(0.0)
+  emolumentos           Float? @default(0.0)
+  taxaTransfAtivos      Float? @default(0.0)
+  totalBovespaSoma      Float? @default(0.0)
+  taxaOperacional       Float? @default(0.0)
+  execucao              Float? @default(0.0)
+  taxaCustodia          Float? @default(0.0)
+  impostos              Float? @default(0.0)
+  irrf                  Float? @default(0.0)
+  outros                Float? @default(0.0)
+  totalCustosDespesas   Float? @default(0.0)
+  liquidoNota           Float? @default(0.0)
 }
