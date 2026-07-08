@@ -2,19 +2,18 @@
 import { PrismaClient } from "@prisma/client";
 import { Pool, neonConfig } from "@neondatabase/serverless";
 import { PrismaNeon } from "@prisma/adapter-neon";
-import ws from "ws";
-
-// Configuração necessária para suporte a WebSockets em ambientes locais/node
-neonConfig.webSocketConstructor = ws;
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 let prismaInstance: PrismaClient;
 
 if (process.env.DATABASE_URL) {
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  // Evita o import do 'ws' atribuindo diretamente o WebSocket global se disponível
+  if (typeof globalThis.WebSocket !== "undefined") {
+    neonConfig.webSocketConstructor = globalThis.WebSocket;
+  }
 
-  // O cast 'as any' resolve o conflito de assinaturas entre as definições de tipo do Neon e do Prisma v7
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   const adapter = new PrismaNeon(pool as any);
 
   prismaInstance = new PrismaClient({
