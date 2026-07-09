@@ -72,15 +72,18 @@ export default function DashboardMesa() {
         let capitalTravadoPuts = 0;
         let desembolsoObrigatorio = 0;
         let premioBruto = 0;
-        let resultadoReal = 0;
         let provisaoDarfTotal = 0;
         let resultadoNaoRealizadoTotal = 0;
         let resultadoRealizadoTotal = 0;
         let qtdAbertas = 0;
         let qtdZeradasPositivas = 0;
         let qtdZeradasTotal = 0;
-        let somaPctLucro = 0;
-        let contPctLucro = 0;
+
+        // Para o % médio de lucro capturado, usamos uma MÉDIA PONDERADA pelo
+        // prêmio de cada operação (não a média simples dos percentuais).
+        // Uma média simples dá o mesmo peso para uma operação de R$ 50 e uma
+        // de R$ 5.000, distorcendo o número exibido no hero do dashboard.
+        let premioBrutoComCotacao = 0;
 
         operacoes.forEach((op: any) => {
           provisaoDarfTotal += op.darf || 0;
@@ -88,14 +91,12 @@ export default function DashboardMesa() {
           if (op.status === "Aberta") {
             qtdAbertas += 1;
             premioBruto += op.premioTotalBruto;
-            resultadoReal += op.resultadoBrutoReal;
 
             if (op.cotacaoOpcao && op.premioTotalBruto > 0) {
               const naoRealizado =
                 op.premioTotalBruto - op.cotacaoOpcao * op.qtde;
               resultadoNaoRealizadoTotal += naoRealizado;
-              somaPctLucro += (naoRealizado / op.premioTotalBruto) * 100;
-              contPctLucro += 1;
+              premioBrutoComCotacao += op.premioTotalBruto;
             }
 
             if (op.operacao.includes("Put")) {
@@ -104,7 +105,6 @@ export default function DashboardMesa() {
                 desembolsoObrigatorio += op.valorExercEfetivoTotal;
             }
           } else {
-            resultadoReal += op.resultadoLiquido;
             resultadoRealizadoTotal += op.resultadoLiquido;
             qtdZeradasTotal += 1;
             if (op.resultadoLiquido >= 0) qtdZeradasPositivas += 1;
@@ -116,7 +116,6 @@ export default function DashboardMesa() {
           capitalTravadoPuts,
           desembolsoObrigatorio,
           premioBruto,
-          resultadoReal,
           provisaoDarfTotal,
           resultadoNaoRealizadoTotal,
           resultadoRealizadoTotal,
@@ -126,8 +125,12 @@ export default function DashboardMesa() {
             qtdZeradasTotal > 0
               ? (qtdZeradasPositivas / qtdZeradasTotal) * 100
               : null,
+          // % ponderado: soma do não-realizado / soma do prêmio das operações
+          // que efetivamente têm cotação de opção informada.
           lucroCapturadoMedio:
-            contPctLucro > 0 ? somaPctLucro / contPctLucro : null,
+            premioBrutoComCotacao > 0
+              ? (resultadoNaoRealizadoTotal / premioBrutoComCotacao) * 100
+              : null,
         });
 
         fetch(`/api/market?ativos=${ativos.join(",")}`)
@@ -247,11 +250,21 @@ export default function DashboardMesa() {
     }
   };
 
+  // Retorna o % do prêmio já capturado (quanto do prêmio recebido não
+  // precisaria ser devolvido se a posição fosse zerada agora).
   const calcLucroCapturado = (op: any): number | null => {
-    if (!op.cotacaoOpcao || !op.premioTotalBruto || op.premioTotalBruto === 0)
-      return null;
+    if (!op.cotacaoOpcao || !op.premioTotalBruto) return null;
     const naoRealizado = op.premioTotalBruto - op.cotacaoOpcao * op.qtde;
     return (naoRealizado / op.premioTotalBruto) * 100;
+  };
+
+  // Retorna o valor em R$ correspondente ao % acima — quanto sobraria, em
+  // reais, se a operação fosse encerrada agora comprando a opção de volta.
+  // Importante: é uma estimativa BRUTA, sem descontar custos de recompra
+  // (emolumentos/corretagem) nem eventual DARF sobre esse resultado.
+  const calcLucroCapturadoReais = (op: any): number | null => {
+    if (!op.cotacaoOpcao || !op.premioTotalBruto) return null;
+    return op.premioTotalBruto - op.cotacaoOpcao * op.qtde;
   };
 
   const fmt = (v: number) =>
@@ -374,7 +387,7 @@ export default function DashboardMesa() {
       <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <p className="text-[11px] font-semibold text-emerald-700 uppercase tracking-widest">
-            % Lucro capturado — posições abertas
+            % Lucro capturado — posições abertas (média ponderada pelo prêmio)
           </p>
           <div className="flex items-baseline gap-3 mt-1">
             <span className="text-4xl font-semibold font-mono text-emerald-700 leading-none">
@@ -389,6 +402,10 @@ export default function DashboardMesa() {
           <p className="text-xs text-emerald-600 mt-1.5 opacity-80">
             Quanto de cada prêmio recebido já não precisa ser devolvido ao
             mercado
+          </p>
+          <p className="text-xs font-mono font-semibold text-emerald-700 mt-1">
+            {fmt(data?.resultadoNaoRealizadoTotal ?? 0)} em lucro não realizado
+            (bruto, antes de custos de recompra e IR)
           </p>
         </div>
         <div className="flex flex-col items-start sm:items-end gap-2 shrink-0">
@@ -615,14 +632,12 @@ export default function DashboardMesa() {
         {operacoesFiltradas.map((op: any) => {
           const precoAcaoReal = market.prices[op.ativo] || op.cotacaoAcao;
           const fonteOriginal = market.fontes[op.ativo] || "estatico";
+          const emTempoReal = fonteOriginal === "api";
           const gatilho = obterGatilhoDecisao(op, precoAcaoReal);
           const expandido = idExpandido === op.id;
           const editandoEste = idEditando === op.id;
           const pctLucro = calcLucroCapturado(op);
-          const resultadoNaoRealizado =
-            op.status === "Aberta" && op.cotacaoOpcao
-              ? op.premioTotalBruto - op.cotacaoOpcao * op.qtde
-              : null;
+          const resultadoNaoRealizado = calcLucroCapturadoReais(op);
           const custoRecompraTotal = op.cotacaoOpcao
             ? op.cotacaoOpcao * op.qtde
             : null;
@@ -682,16 +697,34 @@ export default function DashboardMesa() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-2.5">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-x-6 gap-y-2.5">
                   <div>
                     <span className="text-[10px] text-slate-400 uppercase tracking-wider flex items-center gap-1">
                       Cotação à vista
                       <span
-                        className={`w-1.5 h-1.5 rounded-full inline-block ${fonteOriginal === "api" ? "bg-emerald-500" : "bg-amber-400"}`}
+                        title={
+                          emTempoReal
+                            ? "Cotação obtida em tempo real"
+                            : "Cotação estática (última nota / sem API disponível)"
+                        }
+                        className={`w-1.5 h-1.5 rounded-full inline-block ${emTempoReal ? "bg-emerald-500" : "bg-amber-400"}`}
                       />
                     </span>
                     <span className="text-sm font-mono font-semibold text-sky-600 mt-0.5 block">
                       {fmt(precoAcaoReal)}
+                    </span>
+                    <span
+                      className={`text-[9px] font-semibold uppercase tracking-wider ${emTempoReal ? "text-emerald-600" : "text-amber-600"}`}
+                    >
+                      {emTempoReal ? "tempo real" : "estática · última nota"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-400 uppercase tracking-wider">
+                      Qtde (contratos)
+                    </span>
+                    <span className="text-sm font-mono font-semibold text-slate-700 mt-0.5 block">
+                      {op.qtde?.toLocaleString("pt-BR")}
                     </span>
                   </div>
                   <div>
@@ -718,18 +751,29 @@ export default function DashboardMesa() {
                       <span className="text-[10px] text-slate-400 uppercase tracking-wider">
                         % Lucro capturado
                       </span>
-                      <div className="mt-0.5">
+                      <div className="mt-0.5 flex flex-col gap-0.5">
                         {pctLucro != null ? (
-                          <span
-                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
-                              pctLucro >= 0
-                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                : "bg-red-50 text-red-700 border-red-200"
-                            }`}
-                          >
-                            {pctLucro >= 0 ? "↑" : "↓"}{" "}
-                            {Math.abs(pctLucro).toFixed(1)}%
-                          </span>
+                          <>
+                            <span
+                              className={`inline-flex w-fit items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
+                                pctLucro >= 0
+                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                  : "bg-red-50 text-red-700 border-red-200"
+                              }`}
+                            >
+                              {pctLucro >= 0 ? "↑" : "↓"}{" "}
+                              {Math.abs(pctLucro).toFixed(1)}%
+                            </span>
+                            <span
+                              className={`text-[10px] font-mono font-semibold ${
+                                (resultadoNaoRealizado ?? 0) >= 0
+                                  ? "text-emerald-600"
+                                  : "text-red-600"
+                              }`}
+                            >
+                              {fmt(resultadoNaoRealizado ?? 0)}
+                            </span>
+                          </>
                         ) : (
                           <span className="text-sm text-slate-400 font-mono">
                             sem preço
@@ -788,6 +832,10 @@ export default function DashboardMesa() {
                             Custo de recompra atual: {fmt(custoRecompraTotal)}
                           </p>
                         )}
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          Valor bruto — não desconta emolumentos/corretagem de
+                          recompra nem eventual DARF
+                        </p>
                       </div>
                     </div>
                   )}
@@ -811,7 +859,7 @@ export default function DashboardMesa() {
                       },
                       {
                         label: "Cotação ação",
-                        val: fmt(precoAcaoReal),
+                        val: `${fmt(precoAcaoReal)} · ${emTempoReal ? "tempo real" : "última nota"}`,
                         cor: "text-sky-600",
                       },
                       { label: "Strike", val: fmt(op.strike), cor: "" },
@@ -849,6 +897,19 @@ export default function DashboardMesa() {
                         cor:
                           pctLucro != null
                             ? pctLucro >= 0
+                              ? "text-emerald-600 font-semibold"
+                              : "text-red-600 font-semibold"
+                            : "",
+                      },
+                      {
+                        label: "Lucro capturado (R$, bruto)",
+                        val:
+                          resultadoNaoRealizado != null
+                            ? fmt(resultadoNaoRealizado)
+                            : "—",
+                        cor:
+                          resultadoNaoRealizado != null
+                            ? resultadoNaoRealizado >= 0
                               ? "text-emerald-600 font-semibold"
                               : "text-red-600 font-semibold"
                             : "",
