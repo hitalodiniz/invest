@@ -1,6 +1,6 @@
 // src/app/api/upload-nota/route.ts
 export const dynamic = "force-dynamic";
-import { prisma } from "@/lib/db";
+import { prisma } from "@/app/lib/db";
 import { NextResponse } from "next/server";
 import { extractText, getDocumentProxy } from "unpdf";
 
