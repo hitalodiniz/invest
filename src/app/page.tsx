@@ -706,6 +706,7 @@ export default function DashboardMesa() {
         {operacoesFiltradas.map((op: any) => {
           const precoAcaoReal = market.prices[op.ativo] || op.cotacaoAcao;
           const fonteOriginal = market.fontes[op.ativo] || "estatico";
+          const emTempoReal = fonteOriginal === "api";
           const gatilho = obterGatilhoDecisao(op, precoAcaoReal);
           const expandido = idExpandido === op.id;
           const editandoEste = idEditando === op.id;
