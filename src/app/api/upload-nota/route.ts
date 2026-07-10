@@ -25,8 +25,7 @@ function extrairCampoInvertido(text: string, rotulo: RegExp): number {
   return match ? numeroBR(match[1]) : 0;
 }
 
-// Mapa de prefixo → ativo-base real. "slice(0,4) + '4'" quebra pra CPLE6,
-// VALE3, BBAS3, FIIs (11) etc. — mantém explícito e cai num fallback seguro.
+// ─── Mapa prefixo de opção → ativo-base ──────────────────────────────────────
 const MAPA_ATIVO_BASE: Record<string, string> = {
   PETR: "PETR4",
   VALE: "VALE3",
@@ -57,7 +56,47 @@ const MAPA_ATIVO_BASE: Record<string, string> = {
 
 function resolverAtivoBase(codigoOpcao: string): string {
   const prefixo = codigoOpcao.slice(0, 4).toUpperCase();
-  return MAPA_ATIVO_BASE[prefixo] ?? prefixo + "3"; // fallback, mas revisar se cair aqui
+  return MAPA_ATIVO_BASE[prefixo] ?? prefixo + "3";
+}
+
+// ─── Mapa nome da empresa → ticker (usado em linhas VISTA) ───────────────────
+// A nota Clear não imprime o ticker na linha de ação — imprime o nome completo
+// colado em VISTA (ex: "VISTAPETROBRAS PN N2"). Esse mapa resolve o ticker.
+const MAPA_NOME_TICKER: Array<[string, string]> = [
+  ["PETROBRAS", "PETR4"],
+  ["VALE", "VALE3"],
+  ["COPEL", "CPLE6"],
+  ["CEMIG", "CMIG4"],
+  ["BRADESCO", "BBDC4"],
+  ["GERDAU METALURGICA", "GOAU4"],
+  ["GERDAU", "GGBR4"],
+  ["ITAUUNIBANCO", "ITUB4"],
+  ["ITAU", "ITUB4"],
+  ["BANCO DO BRASIL", "BBAS3"],
+  ["AMBEV", "ABEV3"],
+  ["WEG", "WEGE3"],
+  ["LOCALIZA", "RENT3"],
+  ["MAGAZINE LUIZA", "MGLU3"],
+  ["VIBRA", "VBBR3"],
+  ["PETRORIO", "PRIO3"],
+  ["TOTVS", "TOTS3"],
+  ["SUZANO", "SUZB3"],
+  ["LOJAS RENNER", "LREN3"],
+  ["EQUATORIAL", "EQTL3"],
+  ["USIMINAS", "USIM5"],
+  ["CSN", "CSNA3"],
+  ["BRADESPAR", "BRAP4"],
+];
+
+function resolverTickerAcao(nomeRaw: string): string {
+  const nome = nomeRaw.toUpperCase().trim();
+  for (const [chave, ticker] of MAPA_NOME_TICKER) {
+    if (nome.includes(chave)) return ticker;
+  }
+  // Fallback: se por acaso já vier com formato de ticker (4 letras + número)
+  const tickerMatch = nome.match(/^([A-Z]{4}[0-9]{1,2})\b/);
+  if (tickerMatch) return tickerMatch[1];
+  return nome.slice(0, 4) + "3";
 }
 
 interface LinhaNegociacao {
@@ -72,24 +111,23 @@ interface LinhaNegociacao {
 function parseLinhas(text: string): LinhaNegociacao[] {
   const linhas: LinhaNegociacao[] = [];
 
-  // CORREÇÃO: entre o código da opção e a Quantidade fica a "Especificação do
-  // título" inteira (ex.: "PN 41,91 ITUBE FM/EJ"), que tem VÁRIOS tokens, não
-  // um só. Por isso aqui é .*? (lazy, qualquer quantidade de tokens) em vez de
-  // "\s+\S+\s+" (que só pula UM token e quebra assim que topa com a vírgula
-  // do strike, ex. "41,91" — isso fazia essa regex nunca casar nada).
+  // Opções: OPCAO DE COMPRA / VENDA — código tem padrão XXXXL99(99)
   const regexOpcao =
-    /(?<cv>[CV])\s+OPCAO\s*DE\s*(?<tipo>COMPRA|VENDA)\s+.*?\s+(?<codigo>[A-Z]{4}[A-Z]\d{2,4})\s+.*?\s+(?<qtde>[\d.]+)\s+(?<preco>[\d,.]+)\s+(?<total>[\d,.]+)\s+[DC]/gi;
+    /([CV])\s+OPCAO\s*DE\s*(COMPRA|VENDA)\s+.*?\s+([A-Z]{4}[A-Z]\d{2,4})\s+.*?\s+([\d.]+)\s+([\d,.]+)\s+([\d,.]+)\s+[DC]/gi;
 
-  const regexExerc =
-    /(?<cv>[CV])\s+EXERC\s*OPC\s+.*?\s+(?<codigo>[A-Z]{4}[A-Z]\d{2,4})\s+.*?\s+(?<qtde>[\d.]+)\s+(?<preco>[\d,.]+)\s+(?<total>[\d,.]+)\s+[DC]/gi;
-
+  // Ações à vista: "C VISTAPETROBRAS PN N2 @ 500 39,16 19.580,00 D"
+  // VISTA pode estar colado ao nome da empresa — capturamos o nome e mapeamos.
   const regexAcao =
-    /([CV])\s+VISTA\b.*?\b([A-Z]{4}[0-9]{1,2})\b.*?(\d[\d.]*)\s+([\d,.]+)\s+([\d,.]+)\s+[DC]/gi;
+    /([CV])\s+VISTA([A-Z][A-Z\s]+?)\s+(?:PN|ON|UNT|N1|N2|PNB|DRN|CI)?\s*(?:N[12])?\s*(?:@\s*)?([\d.]+)\s+([\d,.]+)\s+([\d,.]+)\s+[DC]/gi;
+
+  // Exercício de opção
+  const regexExerc =
+    /([CV])\s+EXERC\s*OPC\s+.*?\s+([A-Z]{4}[A-Z]\d{2,4})\s+.*?\s+([\d.]+)\s+([\d,.]+)\s+([\d,.]+)\s+[DC]/gi;
 
   let m;
 
   while ((m = regexOpcao.exec(text)) !== null) {
-    const { cv, tipo, codigo, qtde, preco, total } = m.groups!;
+    const [, cv, tipo, codigo, qtde, preco, total] = m;
     linhas.push({
       cv: cv.toUpperCase() as "C" | "V",
       tipoMercado: `OPCAO DE ${tipo.toUpperCase()}`,
@@ -101,18 +139,18 @@ function parseLinhas(text: string): LinhaNegociacao[] {
   }
 
   while ((m = regexAcao.exec(text)) !== null) {
-    const [, cv, codigo, qtde, preco, total] = m;
+    const [, cv, nomeEmpresa, qtde, preco, total] = m;
+    const ticker = resolverTickerAcao(nomeEmpresa);
+    const qtdeNum = parseInt(qtde.replace(/\./g, ""), 10);
     const jaExiste = linhas.some(
-      (l) =>
-        l.codigo === codigo &&
-        l.quantidade === parseInt(qtde.replace(/\./g, ""), 10),
+      (l) => l.codigo === ticker && l.quantidade === qtdeNum,
     );
     if (!jaExiste) {
       linhas.push({
         cv: cv.toUpperCase() as "C" | "V",
         tipoMercado: "VISTA",
-        codigo: codigo.trim(),
-        quantidade: parseInt(qtde.replace(/\./g, ""), 10),
+        codigo: ticker,
+        quantidade: qtdeNum,
         precoUnitario: numeroBR(preco),
         valorTotal: numeroBR(total),
       });
@@ -120,7 +158,7 @@ function parseLinhas(text: string): LinhaNegociacao[] {
   }
 
   while ((m = regexExerc.exec(text)) !== null) {
-    const { cv, codigo, qtde, preco, total } = m.groups!;
+    const [, cv, codigo, qtde, preco, total] = m;
     linhas.push({
       cv: cv.toUpperCase() as "C" | "V",
       tipoMercado: "EXERC OPC",
@@ -183,9 +221,15 @@ interface BlocoNota {
   texto: string;
 }
 
+// ─── FIX PRINCIPAL: separador correto ────────────────────────────────────────
+// O unpdf lineariza a nota Clear na ordem:
+//   [linhas de negociação] → [Nr. nota / cabeçalho] → [resumo financeiro]
+// Usar "Nr. nota" como separador faz a linha de negociação cair FORA do bloco
+// (ela aparece antes do cabeçalho). O separador correto é o cabeçalho da tabela
+// de negociações: "Negociações Negócios realizados".
 function separarBlocos(text: string): BlocoNota[] {
-  const regex = /Nr\.\s*nota\s+([\d]+)/gi;
-  const matches = [...text.matchAll(regex)];
+  const sepRegex = /Negociações\s+Negócios\s+realizados/gi;
+  const matches = [...text.matchAll(sepRegex)];
   if (matches.length === 0) return [];
 
   const blocos: BlocoNota[] = [];
@@ -193,9 +237,20 @@ function separarBlocos(text: string): BlocoNota[] {
     const inicio = matches[i].index!;
     const fim = i + 1 < matches.length ? matches[i + 1].index! : text.length;
     const trecho = text.slice(inicio, fim);
+
+    const notaMatch = trecho.match(/Nr\.\s*nota\s+([\d]+)/i);
     const dataMatch = trecho.match(/Data\s+preg[ãa]o\s+(\d{2}\/\d{2}\/\d{4})/i);
+
+    if (!notaMatch) {
+      console.warn(
+        "[upload-nota] Bloco sem Nr. nota — ignorado. Trecho:",
+        trecho.slice(0, 200),
+      );
+      continue;
+    }
+
     blocos.push({
-      numeroNota: matches[i][1],
+      numeroNota: notaMatch[1],
       dataPregao: dataMatch ? dataMatch[1] : "",
       texto: trecho,
     });
@@ -243,12 +298,14 @@ export async function POST(request: Request) {
     if (blocos.length === 0) {
       return NextResponse.json(
         {
-          error: "Não foi possível identificar o número da nota no documento.",
+          error:
+            "Não foi possível identificar blocos de negociação no documento.",
         },
         { status: 422 },
       );
     }
 
+    // Verifica duplicidade antes de processar qualquer bloco
     for (const bloco of blocos) {
       const existente = await prisma.notasProcessadas.findUnique({
         where: { id: bloco.numeroNota },
@@ -265,10 +322,6 @@ export async function POST(request: Request) {
 
     const resultados: any[] = [];
     const semCorrespondenciaTotal: any[] = [];
-    // CORREÇÃO: antes, um bloco sem nenhuma linha reconhecida era pulado em
-    // silêncio (`continue`) e a rota ainda respondia { success: true }, sem
-    // gravar nada e sem logar nada — exatamente o comportamento que te
-    // confundiu. Agora isso é logado e reportado explicitamente.
     const blocosSemLinhas: string[] = [];
 
     for (const bloco of blocos) {
@@ -277,8 +330,7 @@ export async function POST(request: Request) {
       const linhas = parseLinhas(texto);
       if (linhas.length === 0) {
         console.warn(
-          `[upload-nota] Nota ${numeroNota}: 0 linhas reconhecidas pelo parser. ` +
-            `Verifique se o layout do PDF mudou. Texto extraído (primeiros 500 chars): ` +
+          `[upload-nota] Nota ${numeroNota}: 0 linhas reconhecidas. Texto (500 chars): ` +
             texto.slice(0, 500),
         );
         blocosSemLinhas.push(numeroNota);
@@ -287,6 +339,8 @@ export async function POST(request: Request) {
 
       const resumo = extrairResumoFinanceiro(texto);
 
+      // Rateio de custos apenas sobre linhas de opção (não dilui custo de ação
+      // entre as opções nem vice-versa — cada nota tem seus próprios custos).
       const linhasOpcao = linhas.filter((l) => l.tipoMercado !== "VISTA");
       const valorBaseRateio =
         (linhasOpcao.length > 0 ? linhasOpcao : linhas).reduce(
@@ -317,6 +371,7 @@ export async function POST(request: Request) {
         const custosDaLinha =
           custoOperacionalTotal * (linha.valorTotal / valorBaseRateio);
 
+        // ── Ação à vista ────────────────────────────────────────────────
         if (isVista) {
           aberturas.push({
             id: globalThis.crypto.randomUUID(),
@@ -347,12 +402,12 @@ export async function POST(request: Request) {
           continue;
         }
 
+        // ── Venda de opção → abre posição ───────────────────────────────
         if (linha.cv === "V" && (isCall || isPut)) {
-          const ativoBase = resolverAtivoBase(linha.codigo);
           aberturas.push({
             id: globalThis.crypto.randomUUID(),
             data: dataPregao,
-            ativo: ativoBase,
+            ativo: resolverAtivoBase(linha.codigo),
             operacao: isCall ? "Venda de Call" : "Venda de Put",
             tipo: "Venda",
             codigo: linha.codigo,
@@ -380,6 +435,7 @@ export async function POST(request: Request) {
           continue;
         }
 
+        // ── Compra de opção → fecha posição (FIFO) ──────────────────────
         if (linha.cv === "C" && (isCall || isPut)) {
           const posicoesAbertas = await prisma.operacao.findMany({
             where: { codigo: linha.codigo, status: "Aberta" },
@@ -462,12 +518,11 @@ export async function POST(request: Request) {
           }
 
           if (restante > 0) {
-            const ativoBase = resolverAtivoBase(linha.codigo);
             semCorrespondencia.push({ ...linha, quantidade: restante });
             aberturas.push({
               id: globalThis.crypto.randomUUID(),
               data: dataPregao,
-              ativo: ativoBase,
+              ativo: resolverAtivoBase(linha.codigo),
               operacao: isCall
                 ? "Compra de Call (sem par)"
                 : "Compra de Put (sem par)",
@@ -532,14 +587,12 @@ export async function POST(request: Request) {
       semCorrespondenciaTotal.push(...semCorrespondencia);
     }
 
-    // CORREÇÃO: se NENHUM bloco produziu linhas, isso é uma falha de parsing,
-    // não um sucesso silencioso — reporta como erro em vez de success:true.
     if (resultados.length === 0) {
       return NextResponse.json(
         {
           error:
             "Nenhuma linha de negociação foi reconhecida em nenhuma nota do PDF. " +
-            "Nada foi gravado. Confira os logs do servidor para o texto extraído.",
+            "Confira os logs do servidor para o texto extraído.",
           notasComFalha: blocosSemLinhas,
         },
         { status: 422 },
