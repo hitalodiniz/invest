@@ -37,6 +37,11 @@ export default function DashboardMesa() {
 
   const [capitalInput, setCapitalInput] = useState<string>("425.000,00");
   const [tesouroSelic, setTesouroSelic] = useState<number>(425000);
+  // Taxa Selic atual (% a.a.) — usada para comparar o rendimento do TD Selic
+  // (onde o capital de garantia fica aplicado) com o yield gerado pelos
+  // prêmios das opções. Editável pois muda a cada reunião do Copom (~45 dias).
+  // Valor padrão: 14,25% a.a., definido em 17/06/2026.
+  const [taxaSelicAnual, setTaxaSelicAnual] = useState<number>(14.25);
 
   const [modalUploadAberto, setModalUploadAberto] = useState(false);
   const [arquivoNota, setArquivoNota] = useState<File | null>(null);
@@ -75,6 +80,25 @@ export default function DashboardMesa() {
     return isNaN(n) ? 0 : n;
   };
 
+  // Data de abertura da operação, com parsing seguro (op.data vem no
+  // formato DD/MM/YYYY). Retorna null se o formato for inesperado, em vez
+  // de propagar um Invalid Date silenciosamente.
+  const parseDataAbertura = (op: any): Date | null => {
+    if (typeof op.data !== "string") return null;
+    const p = op.data.split("/");
+    if (p.length !== 3) return null;
+    const d = new Date(`${p[2]}-${p[1]}-${p[0]}`);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  // Dias corridos desde a abertura até hoje (0 se não for possível calcular).
+  const diasDesdeAbertura = (op: any): number => {
+    const abertura = parseDataAbertura(op);
+    if (!abertura) return 0;
+    const dias = (new Date().getTime() - abertura.getTime()) / 86400000;
+    return dias > 0 ? dias : 0;
+  };
+
   // Replica a fórmula da planilha: decaimento temporal quando a cotação não
   // foi atualizada manualmente (ainda igual ao prêmio unitário inicial).
   // =SE(exercendo="Sim"; premioUn*1,5;
@@ -84,16 +108,13 @@ export default function DashboardMesa() {
     const premioUn: number =
       op.premioUnitario ?? op.premioTotalBruto / Math.max(1, op.qtde);
     if (op.exercendo === "Sim") return premioUn * 1.5;
-    const hoje = new Date();
-    const p = typeof op.data === "string" ? op.data.split("/") : [];
-    const abertura =
-      p.length === 3 ? new Date(`${p[2]}-${p[1]}-${p[0]}`) : new Date(NaN);
+    const abertura = parseDataAbertura(op);
     let fatorTempo = 1;
-    if (op.vencimento) {
+    if (op.vencimento && abertura) {
       const venc = new Date(op.vencimento);
       const total = (venc.getTime() - abertura.getTime()) / 86400000;
-      const passados = (hoje.getTime() - abertura.getTime()) / 86400000;
-      if (total > 0 && passados >= 0) {
+      const passados = diasDesdeAbertura(op);
+      if (total > 0) {
         const ft = Math.exp((-3 * passados) / total);
         if (isFinite(ft) && !isNaN(ft)) fatorTempo = ft;
       }
