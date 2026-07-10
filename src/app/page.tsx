@@ -5,6 +5,7 @@ export default function DashboardMesa() {
   const [data, setData] = useState<any>(null);
   const [market, setMarket] = useState<any>({ prices: {}, fontes: {} });
   const [idExpandido, setIdExpandido] = useState<string | null>(null);
+  const [erroCarregamento, setErroCarregamento] = useState<string | null>(null);
 
   const [filtroAtivo, setFiltroAtivo] = useState<string>("TODOS");
   const [filtroTipo, setFiltroTipo] = useState<string>("TODOS");
@@ -58,10 +59,66 @@ export default function DashboardMesa() {
   const carregarNotas = () => {
     fetch("/api/notas")
       .then((r) => r.json())
-      .then((lista) => setNotas(lista));
+      .then((lista) => setNotas(lista))
+      .catch((e) => console.error("Erro ao carregar notas", e));
+  };
+
+  // ── Helpers de parsing seguros ──────────────────────────────────────────
+  // distanciaStrike pode vir da API como número (ex: 5.23) OU como string
+  // (ex: "5,23%"). Chamar .replace() direto quebra quando vem número — foi
+  // essa quebra que fazia o dashboard inteiro ficar sem nenhum card (o erro
+  // acontecia dentro do .then do fetch, antes de setData ser chamado).
+  const parseDistanciaStrike = (v: any): number => {
+    if (v == null) return 0;
+    if (typeof v === "number") return v;
+    const n = parseFloat(String(v).replace("%", "").replace(",", ".").trim());
+    return isNaN(n) ? 0 : n;
+  };
+
+  // Replica a fórmula da planilha: decaimento temporal quando a cotação não
+  // foi atualizada manualmente (ainda igual ao prêmio unitário inicial).
+  // =SE(exercendo="Sim"; premioUn*1,5;
+  //    MÁXIMO(0,01; premioUn * EXP(-3*(hoje-abertura)/(venc-abertura))
+  //                          * MÁXIMO(0,1; 1-ABS(distancia)/15%)))
+  const estimarCotacaoOpcao = (op: any): number => {
+    const premioUn: number =
+      op.premioUnitario ?? op.premioTotalBruto / Math.max(1, op.qtde);
+    if (op.exercendo === "Sim") return premioUn * 1.5;
+    const hoje = new Date();
+    const p = typeof op.data === "string" ? op.data.split("/") : [];
+    const abertura =
+      p.length === 3 ? new Date(`${p[2]}-${p[1]}-${p[0]}`) : new Date(NaN);
+    let fatorTempo = 1;
+    if (op.vencimento) {
+      const venc = new Date(op.vencimento);
+      const total = (venc.getTime() - abertura.getTime()) / 86400000;
+      const passados = (hoje.getTime() - abertura.getTime()) / 86400000;
+      if (total > 0 && passados >= 0) {
+        const ft = Math.exp((-3 * passados) / total);
+        if (isFinite(ft) && !isNaN(ft)) fatorTempo = ft;
+      }
+    }
+    const dist = parseDistanciaStrike(op.distanciaStrike) / 100;
+    const moneyness = Math.max(0.1, 1 - Math.abs(dist) / 0.15);
+    return Math.max(0.01, premioUn * fatorTempo * moneyness);
+  };
+
+  // Cotação efetiva: manual se foi editada, estimada (decaimento) caso contrário
+  const cotacaoEfetiva = (
+    op: any,
+  ): { valor: number; origem: "manual" | "estimada" } | null => {
+    if (!op.premioTotalBruto || op.status !== "Aberta") return null;
+    const editada =
+      op.cotacaoOpcao != null &&
+      Math.abs(op.cotacaoOpcao - (op.premioUnitario ?? 0)) > 0.001;
+    return {
+      valor: editada ? op.cotacaoOpcao : estimarCotacaoOpcao(op),
+      origem: editada ? "manual" : "estimada",
+    };
   };
 
   const carregarDashboard = () => {
+    setErroCarregamento(null);
     fetch("/api/operacoes")
       .then((res) => res.json())
       .then((operacoes) => {
@@ -72,15 +129,16 @@ export default function DashboardMesa() {
         let capitalTravadoPuts = 0;
         let desembolsoObrigatorio = 0;
         let premioBruto = 0;
-        let resultadoReal = 0;
         let provisaoDarfTotal = 0;
         let resultadoNaoRealizadoTotal = 0;
         let resultadoRealizadoTotal = 0;
         let qtdAbertas = 0;
         let qtdZeradasPositivas = 0;
         let qtdZeradasTotal = 0;
-        let somaPctLucro = 0;
-        let contPctLucro = 0;
+
+        // Média PONDERADA pelo prêmio (não média simples dos percentuais),
+        // para não dar o mesmo peso a uma operação de R$ 50 e uma de R$ 5.000.
+        let premioBrutoComCotacao = 0;
 
         operacoes.forEach((op: any) => {
           provisaoDarfTotal += op.darf || 0;
@@ -88,51 +146,12 @@ export default function DashboardMesa() {
           if (op.status === "Aberta") {
             qtdAbertas += 1;
             premioBruto += op.premioTotalBruto;
-            resultadoReal += op.resultadoBrutoReal;
 
-            if (op.premioTotalBruto > 0) {
-              // Usa cotação manual se editada, senão estimador de decaimento
-              const editada =
-                op.cotacaoOpcao != null &&
-                Math.abs(op.cotacaoOpcao - (op.premioUnInicial ?? 0)) > 0.001;
-              const premioUn: number =
-                op.premioUnInicial ??
-                op.premioTotalBruto / Math.max(1, op.qtde);
-              let cotEst: number;
-              if (editada) {
-                cotEst = op.cotacaoOpcao;
-              } else if (op.exercendo === "Sim") {
-                cotEst = premioUn * 1.5;
-              } else {
-                const p = (op.data as string).split("/");
-                const ab = new Date(`${p[2]}-${p[1]}-${p[0]}`);
-                const hj = new Date();
-                let ft = 1;
-                if (op.vencimento) {
-                  const vc = new Date(op.vencimento);
-                  const tot = (vc.getTime() - ab.getTime()) / 86400000;
-                  const pas = (hj.getTime() - ab.getTime()) / 86400000;
-                  if (tot > 0 && pas >= 0) {
-                    const v = Math.exp((-3 * pas) / tot);
-                    if (isFinite(v)) ft = v;
-                  }
-                }
-                const dist =
-                  parseFloat(
-                    ((op.distanciaStrike as string) ?? "0")
-                      .replace("%", "")
-                      .replace(",", ".")
-                      .trim(),
-                  ) / 100;
-                cotEst = Math.max(
-                  0.01,
-                  premioUn * ft * Math.max(0.1, 1 - Math.abs(dist) / 0.15),
-                );
-              }
-              const naoRealizado = op.premioTotalBruto - cotEst * op.qtde;
+            const cot = cotacaoEfetiva(op);
+            if (cot && op.premioTotalBruto > 0) {
+              const naoRealizado = op.premioTotalBruto - cot.valor * op.qtde;
               resultadoNaoRealizadoTotal += naoRealizado;
-              somaPctLucro += (naoRealizado / op.premioTotalBruto) * 100;
-              contPctLucro += 1;
+              premioBrutoComCotacao += op.premioTotalBruto;
             }
 
             if (op.operacao.includes("Put")) {
@@ -141,7 +160,6 @@ export default function DashboardMesa() {
                 desembolsoObrigatorio += op.valorExercEfetivoTotal;
             }
           } else {
-            resultadoReal += op.resultadoLiquido;
             resultadoRealizadoTotal += op.resultadoLiquido;
             qtdZeradasTotal += 1;
             if (op.resultadoLiquido >= 0) qtdZeradasPositivas += 1;
@@ -153,7 +171,6 @@ export default function DashboardMesa() {
           capitalTravadoPuts,
           desembolsoObrigatorio,
           premioBruto,
-          resultadoReal,
           provisaoDarfTotal,
           resultadoNaoRealizadoTotal,
           resultadoRealizadoTotal,
@@ -164,12 +181,23 @@ export default function DashboardMesa() {
               ? (qtdZeradasPositivas / qtdZeradasTotal) * 100
               : null,
           lucroCapturadoMedio:
-            contPctLucro > 0 ? somaPctLucro / contPctLucro : null,
+            premioBrutoComCotacao > 0
+              ? (resultadoNaoRealizadoTotal / premioBrutoComCotacao) * 100
+              : null,
         });
 
         fetch(`/api/market?ativos=${ativos.join(",")}`)
           .then((r) => r.json())
-          .then(setMarket);
+          .then(setMarket)
+          .catch((e) =>
+            console.error("Erro ao carregar cotações de mercado", e),
+          );
+      })
+      .catch((e) => {
+        console.error("Erro ao carregar operações", e);
+        setErroCarregamento(
+          "Não foi possível carregar as operações. Verifique o console para detalhes e tente novamente.",
+        );
       });
   };
 
@@ -282,53 +310,6 @@ export default function DashboardMesa() {
         estilo: "bg-emerald-50 text-emerald-700 border-emerald-200",
       };
     }
-  };
-
-  // Replica a fórmula da planilha: decaimento temporal quando a cotação não
-  // foi atualizada manualmente (ainda igual ao prêmio inicial da importação).
-  // =SE(exercendo="Sim"; premioUn*1,5;
-  //    MÁXIMO(0,01; premioUn * EXP(-3*(hoje-abertura)/(venc-abertura))
-  //                          * MÁXIMO(0,1; 1-ABS(distancia)/15%)))
-  const estimarCotacaoOpcao = (op: any): number => {
-    const premioUn: number =
-      op.premioUnInicial ?? op.premioTotalBruto / Math.max(1, op.qtde);
-    if (op.exercendo === "Sim") return premioUn * 1.5;
-    const hoje = new Date();
-    const p = (op.data as string).split("/");
-    const abertura = new Date(`${p[2]}-${p[1]}-${p[0]}`);
-    let fatorTempo = 1;
-    if (op.vencimento) {
-      const venc = new Date(op.vencimento);
-      const total = (venc.getTime() - abertura.getTime()) / 86400000;
-      const passados = (hoje.getTime() - abertura.getTime()) / 86400000;
-      if (total > 0 && passados >= 0) {
-        const ft = Math.exp((-3 * passados) / total);
-        if (isFinite(ft) && !isNaN(ft)) fatorTempo = ft;
-      }
-    }
-    const dist =
-      parseFloat(
-        ((op.distanciaStrike as string) ?? "0")
-          .replace("%", "")
-          .replace(",", ".")
-          .trim(),
-      ) / 100;
-    const moneyness = Math.max(0.1, 1 - Math.abs(dist) / 0.15);
-    return Math.max(0.01, premioUn * fatorTempo * moneyness);
-  };
-
-  // Cotação efetiva: manual se foi editada, estimada caso contrário
-  const cotacaoEfetiva = (
-    op: any,
-  ): { valor: number; origem: "manual" | "estimada" } | null => {
-    if (!op.premioTotalBruto || op.status !== "Aberta") return null;
-    const editada =
-      op.cotacaoOpcao != null &&
-      Math.abs(op.cotacaoOpcao - (op.premioUnInicial ?? 0)) > 0.001;
-    return {
-      valor: editada ? op.cotacaoOpcao : estimarCotacaoOpcao(op),
-      origem: editada ? "manual" : "estimada",
-    };
   };
 
   const calcLucroCapturado = (op: any): number | null => {
@@ -461,11 +442,23 @@ export default function DashboardMesa() {
         </div>
       </div>
 
+      {erroCarregamento && (
+        <div className="bg-red-50 border border-red-200 text-red-700 text-xs font-semibold rounded-lg px-4 py-3 flex items-center justify-between gap-3">
+          <span>⚠️ {erroCarregamento}</span>
+          <button
+            onClick={carregarDashboard}
+            className="shrink-0 bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-md text-[11px] font-semibold"
+          >
+            Tentar novamente
+          </button>
+        </div>
+      )}
+
       {/* ── HERO: % Lucro Capturado ── */}
       <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <p className="text-[11px] font-semibold text-emerald-700 uppercase tracking-widest">
-            % Lucro capturado — posições abertas
+            % Lucro capturado — posições abertas (média ponderada pelo prêmio)
           </p>
           <div className="flex items-baseline gap-3 mt-1">
             <span className="text-4xl font-semibold font-mono text-emerald-700 leading-none">
@@ -480,6 +473,10 @@ export default function DashboardMesa() {
           <p className="text-xs text-emerald-600 mt-1.5 opacity-80">
             Quanto de cada prêmio recebido já não precisa ser devolvido ao
             mercado
+          </p>
+          <p className="text-xs font-mono font-semibold text-emerald-700 mt-1">
+            {fmt(data?.resultadoNaoRealizadoTotal ?? 0)} em lucro não realizado
+            (bruto, antes de custos de recompra e IR)
           </p>
         </div>
         <div className="flex flex-col items-start sm:items-end gap-2 shrink-0">
@@ -720,6 +717,7 @@ export default function DashboardMesa() {
                   86400000,
               )
             : null;
+          const distNum = parseDistanciaStrike(op.distanciaStrike);
 
           return (
             <div
@@ -776,18 +774,36 @@ export default function DashboardMesa() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-x-4 gap-y-2.5">
-                  {/* Ação */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-x-4 gap-y-2.5">
+                  {/* Ação — com indicação explícita de tempo real x estática */}
                   <div>
                     <span className="text-[10px] text-slate-400 uppercase tracking-wider flex items-center gap-1">
-                      Ação
+                      Cotação ação
                       <span
-                        title={emTempoReal ? "Tempo real" : "Estática"}
+                        title={
+                          emTempoReal
+                            ? "Cotação obtida em tempo real"
+                            : "Cotação estática (última nota / sem API disponível)"
+                        }
                         className={`w-1.5 h-1.5 rounded-full inline-block ${emTempoReal ? "bg-emerald-500" : "bg-amber-400"}`}
                       />
                     </span>
                     <span className="text-sm font-mono font-semibold text-sky-600 mt-0.5 block">
                       {fmt(precoAcaoReal)}
+                    </span>
+                    <span
+                      className={`text-[9px] font-semibold uppercase tracking-wider ${emTempoReal ? "text-emerald-600" : "text-amber-600"}`}
+                    >
+                      {emTempoReal ? "tempo real" : "estática · última nota"}
+                    </span>
+                  </div>
+                  {/* Qtde de contratos */}
+                  <div>
+                    <span className="text-[10px] text-slate-400 uppercase tracking-wider">
+                      Qtde (contratos)
+                    </span>
+                    <span className="text-sm font-mono font-semibold text-slate-700 mt-0.5 block">
+                      {op.qtde?.toLocaleString("pt-BR")}
                     </span>
                   </div>
                   {/* Strike */}
@@ -798,7 +814,7 @@ export default function DashboardMesa() {
                     <span className="text-sm font-mono text-slate-700 mt-0.5 block">
                       {fmt(op.strike)}
                       <span
-                        className={`text-xs ml-1 font-semibold ${parseFloat((op.distanciaStrike ?? "0").replace(",", ".")) < 0 ? "text-emerald-600" : "text-red-600"}`}
+                        className={`text-xs ml-1 font-semibold ${distNum < 0 ? "text-emerald-600" : "text-red-600"}`}
                       >
                         ({fmtPct(op.distanciaStrike)})
                       </span>
@@ -845,7 +861,7 @@ export default function DashboardMesa() {
                           </>
                         ) : (
                           <span className="text-xs text-slate-400">
-                            sem vencimento
+                            sem prêmio informado
                           </span>
                         )
                       ) : (
@@ -871,7 +887,9 @@ export default function DashboardMesa() {
                       {cotEfet && (
                         <span className="text-[9px] text-slate-400">
                           @ {cotEfet.valor.toFixed(2)}/un{" "}
-                          {cotEfet.origem === "manual" ? "· manual" : ""}
+                          {cotEfet.origem === "manual"
+                            ? "· manual"
+                            : "· estimado"}
                         </span>
                       )}
                     </div>
@@ -949,6 +967,10 @@ export default function DashboardMesa() {
                             Custo de recompra atual: {fmt(custoRecompraTotal)}
                           </p>
                         )}
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          Valor bruto — não desconta emolumentos/corretagem de
+                          recompra nem eventual DARF
+                        </p>
                       </div>
                     </div>
                   )}
@@ -972,7 +994,7 @@ export default function DashboardMesa() {
                       },
                       {
                         label: "Cotação ação",
-                        val: fmt(precoAcaoReal),
+                        val: `${fmt(precoAcaoReal)} · ${emTempoReal ? "tempo real" : "última nota"}`,
                         cor: "text-sky-600",
                       },
                       { label: "Strike", val: fmt(op.strike), cor: "" },
@@ -1010,6 +1032,19 @@ export default function DashboardMesa() {
                         cor:
                           pctLucro != null
                             ? pctLucro >= 0
+                              ? "text-emerald-600 font-semibold"
+                              : "text-red-600 font-semibold"
+                            : "",
+                      },
+                      {
+                        label: "Lucro capturado (R$, bruto)",
+                        val:
+                          resultadoNaoRealizado != null
+                            ? fmt(resultadoNaoRealizado)
+                            : "—",
+                        cor:
+                          resultadoNaoRealizado != null
+                            ? resultadoNaoRealizado >= 0
                               ? "text-emerald-600 font-semibold"
                               : "text-red-600 font-semibold"
                             : "",
@@ -1246,7 +1281,7 @@ export default function DashboardMesa() {
           );
         })}
 
-        {operacoesFiltradas.length === 0 && (
+        {operacoesFiltradas.length === 0 && !erroCarregamento && (
           <div className="text-center py-16 text-sm text-slate-400 font-mono">
             Nenhuma operação encontrada com os filtros atuais.
           </div>
