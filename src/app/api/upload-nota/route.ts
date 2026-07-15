@@ -104,16 +104,31 @@ interface LinhaNegociacao {
   tipoMercado: string;
   codigo: string;
   quantidade: number;
-  precoUnitario: number;
+  precoUnitario: number; // prêmio da opção
+  strikeReal: number; // strike extraído da especificação do título
+  vencimento: string | null; // YYYY-MM-DD — terceira segunda do mês do prazo
   valorTotal: number;
+}
+
+// Retorna a terceira segunda-feira do mês (padrão B3 para vencimento de opções)
+function terceiraSegundaFeira(ano: number, mes: number): string {
+  const d = new Date(ano, mes - 1, 1);
+  let cont = 0;
+  while (cont < 3) {
+    if (d.getDay() === 1) cont++;
+    if (cont < 3) d.setDate(d.getDate() + 1);
+  }
+  return d.toISOString().slice(0, 10);
 }
 
 function parseLinhas(text: string): LinhaNegociacao[] {
   const linhas: LinhaNegociacao[] = [];
 
   // Opções: OPCAO DE COMPRA / VENDA — código tem padrão XXXXL99(99)
+  // Captura prazo (MM/YY), código, strike, qtde, prêmio, total
+  // "V OPCAO DE COMPRA 07/26 PETRG412 PN 40,11 PETRE 1200 1,10 1.320,00 C"
   const regexOpcao =
-    /([CV])\s+OPCAO\s*DE\s*(COMPRA|VENDA)\s+.*?\s+([A-Z]{4}[A-Z]\d{2,4})\s+.*?\s+([\d.]+)\s+([\d,.]+)\s+([\d,.]+)\s+[DC]/gi;
+    /([CV])\s+OPCAO\s*DE\s*(COMPRA|VENDA)\s+(\d{2})\/(\d{2})\s+([A-Z]{4}[A-Z]\d{2,4})\s+(?:PN|ON|UNT|PNB|DRN|CI)?\s*(?:N[12])?\s*([\d,]+)\s+\S+\s+#?\s*([\d.]+)\s+([\d,.]+)\s+([\d,.]+)\s+[DC]/gi;
 
   // Ações à vista: "C VISTAPETROBRAS PN N2 @ 500 39,16 19.580,00 D"
   // VISTA pode estar colado ao nome da empresa — capturamos o nome e mapeamos.
@@ -127,13 +142,30 @@ function parseLinhas(text: string): LinhaNegociacao[] {
   let m;
 
   while ((m = regexOpcao.exec(text)) !== null) {
-    const [, cv, tipo, codigo, qtde, preco, total] = m;
+    const [
+      ,
+      cv,
+      tipo,
+      prazoMes,
+      prazoAno,
+      codigo,
+      strikeStr,
+      qtde,
+      preco,
+      total,
+    ] = m;
+    const vencimento = terceiraSegundaFeira(
+      2000 + parseInt(prazoAno, 10),
+      parseInt(prazoMes, 10),
+    );
     linhas.push({
       cv: cv.toUpperCase() as "C" | "V",
       tipoMercado: `OPCAO DE ${tipo.toUpperCase()}`,
       codigo: codigo.trim(),
       quantidade: parseInt(qtde.replace(/\./g, ""), 10),
       precoUnitario: numeroBR(preco),
+      strikeReal: numeroBR(strikeStr),
+      vencimento,
       valorTotal: numeroBR(total),
     });
   }
@@ -152,6 +184,8 @@ function parseLinhas(text: string): LinhaNegociacao[] {
         codigo: ticker,
         quantidade: qtdeNum,
         precoUnitario: numeroBR(preco),
+        strikeReal: numeroBR(preco),
+        vencimento: null,
         valorTotal: numeroBR(total),
       });
     }
@@ -165,6 +199,8 @@ function parseLinhas(text: string): LinhaNegociacao[] {
       codigo: codigo.trim(),
       quantidade: parseInt(qtde.replace(/\./g, ""), 10),
       precoUnitario: numeroBR(preco),
+      strikeReal: numeroBR(preco),
+      vencimento: null,
       valorTotal: numeroBR(total),
     });
   }
@@ -376,6 +412,7 @@ export async function POST(request: Request) {
           aberturas.push({
             id: globalThis.crypto.randomUUID(),
             data: dataPregao,
+            vencimento: null,
             ativo: linha.codigo,
             operacao: linha.cv === "C" ? "Compra de Ação" : "Venda de Ação",
             tipo: linha.cv === "C" ? "Compra" : "Venda",
@@ -391,7 +428,7 @@ export async function POST(request: Request) {
             lucroCapturado: "0,00%",
             custoRecompraTotal: 0.0,
             resultadoBrutoReal: linha.valorTotal,
-            valorExercicioUn: 0.0,
+            valorExercicioUn: linha.precoUnitario,
             valorExercEfetivoTotal: 0.0,
             darf: 0.0,
             resultadoLiquido: linha.valorTotal,
@@ -404,16 +441,19 @@ export async function POST(request: Request) {
 
         // ── Venda de opção → abre posição ───────────────────────────────
         if (linha.cv === "V" && (isCall || isPut)) {
+          const strikeOpcao = (linha as any).strikeReal ?? linha.precoUnitario;
+          const ativoBase = resolverAtivoBase(linha.codigo);
           aberturas.push({
             id: globalThis.crypto.randomUUID(),
             data: dataPregao,
-            ativo: resolverAtivoBase(linha.codigo),
+            vencimento: (linha as any).vencimento ?? null,
+            ativo: ativoBase,
             operacao: isCall ? "Venda de Call" : "Venda de Put",
             tipo: "Venda",
             codigo: linha.codigo,
             qtde: linha.quantidade,
             cotacaoAcao: linha.precoUnitario,
-            strike: linha.precoUnitario,
+            strike: strikeOpcao,
             premioUnInicial: linha.precoUnitario,
             premioTotalBruto: linha.valorTotal,
             distanciaStrike: "0,00%",
@@ -422,9 +462,9 @@ export async function POST(request: Request) {
             lucroCapturado: "0,00%",
             custoRecompraTotal: 0.0,
             resultadoBrutoReal: linha.valorTotal,
-            valorExercicioUn: 0.0,
+            valorExercicioUn: strikeOpcao,
             valorExercEfetivoTotal: isPut
-              ? linha.quantidade * linha.precoUnitario
+              ? linha.quantidade * strikeOpcao
               : 0.0,
             darf: 0.0,
             resultadoLiquido: linha.valorTotal,
@@ -522,6 +562,7 @@ export async function POST(request: Request) {
             aberturas.push({
               id: globalThis.crypto.randomUUID(),
               data: dataPregao,
+              vencimento: (linha as any).vencimento ?? null,
               ativo: resolverAtivoBase(linha.codigo),
               operacao: isCall
                 ? "Compra de Call (sem par)"
@@ -530,7 +571,7 @@ export async function POST(request: Request) {
               codigo: linha.codigo,
               qtde: restante,
               cotacaoAcao: precoRecompraUnit,
-              strike: precoRecompraUnit,
+              strike: (linha as any).strikeReal ?? precoRecompraUnit,
               premioUnInicial: precoRecompraUnit,
               premioTotalBruto: 0.0,
               distanciaStrike: "0,00%",
