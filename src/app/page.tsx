@@ -74,11 +74,11 @@ export default function DashboardMesa() {
   };
 
   // ── Estimador de decaimento temporal (replica fórmula do Google Sheets) ────
-  // Campo do banco: premioUnitario (não premioUnInicial).
-  // Usado APENAS quando cotacaoOpcao === premioUnitario (valor da importação,
+  // Campo do banco: premioUnInicial.
+  // Usado APENAS quando cotacaoOpcao === premioUnInicial (valor da importação,
   // não editado manualmente ainda).
   const estimarCotacaoOpcao = (op: any): number => {
-    const premioUn: number = op.premioUnitario ?? op.premioTotalBruto / Math.max(1, op.qtde);
+    const premioUn: number = op.premioUnInicial ?? op.premioTotalBruto / Math.max(1, op.qtde);
     if (op.exercendo === "Sim") return premioUn * 1.5;
     const abertura = parseDataAbertura(op);
     let fatorTempo = 1;
@@ -100,7 +100,7 @@ export default function DashboardMesa() {
   const cotacaoEfetiva = (op: any): { valor: number; origem: "manual" | "estimada" } | null => {
     if (!op.premioTotalBruto || op.status !== "Aberta") return null;
     const editada = op.cotacaoOpcao != null &&
-      Math.abs(op.cotacaoOpcao - (op.premioUnitario ?? 0)) > 0.001;
+      Math.abs(op.cotacaoOpcao - (op.premioUnInicial ?? 0)) > 0.001;
     return {
       valor: editada ? op.cotacaoOpcao : estimarCotacaoOpcao(op),
       origem: editada ? "manual" : "estimada",
@@ -240,21 +240,85 @@ export default function DashboardMesa() {
     }
   };
 
-  const obterGatilhoDecisao = (op: any, precoAtualAcao: number) => {
+  // Decisão operacional — replica exatamente a lógica da planilha:
+  // SE(Exercendo="Sim") → MANEJO / AGUARDAR VENCIMENTO
+  // SE(PremioTotal<=0)  → DADOS INCORRETOS
+  // SE(LucroCapturado>=80%) → AVALIAR ENCERRAMENTO
+  // SENÃO → CARREGAR POSIÇÃO
+  // Para zeradas: ENCERRADA
+  const obterGatilhoDecisao = (op: any, _precoAtualAcao?: number) => {
     if (op.status === "Zerada")
       return { texto: "ENCERRADA", estilo: "bg-slate-100 text-slate-500 border-slate-200" };
-    if (!precoAtualAcao)
-      return { texto: "AGUARDANDO", estilo: "bg-slate-100 text-slate-400 border-slate-200" };
-    const isCall = op.operacao.includes("Call");
-    if (isCall) {
-      if (precoAtualAcao > op.strike)
-        return { texto: "AVALIAR ROLAGEM", estilo: "bg-amber-50 text-amber-700 border-amber-200" };
-      return { texto: "MANTER (CALL OTM)", estilo: "bg-emerald-50 text-emerald-700 border-emerald-200" };
-    } else {
-      if (precoAtualAcao < op.strike)
-        return { texto: "DEFENDER / RECOMPRA", estilo: "bg-red-50 text-red-700 border-red-200" };
-      return { texto: "MANTER (PUT OTM)", estilo: "bg-emerald-50 text-emerald-700 border-emerald-200" };
+    if (!op.premioTotalBruto || op.premioTotalBruto <= 0)
+      return { texto: "DADOS INCORRETOS", estilo: "bg-slate-100 text-slate-400 border-slate-200" };
+    if (op.exercendo === "Sim")
+      return { texto: "MANEJO / AGUARDAR VENCIMENTO", estilo: "bg-amber-50 text-amber-700 border-amber-200" };
+    const pct = calcLucroCapturado(op);
+    if (pct != null && pct >= 80)
+      return { texto: "AVALIAR ENCERRAMENTO", estilo: "bg-emerald-50 text-emerald-700 border-emerald-200" };
+    return { texto: "CARREGAR POSIÇÃO", estilo: "bg-sky-50 text-sky-700 border-sky-200" };
+  };
+
+  // ── Cálculos de rendimento TD Selic ────────────────────────────────────────
+  const TAXA_SELIC_DIARIA = 0.000402; // ~14,25% a.a. → 0,0402% ao dia útil
+  const IR_TD_ALIQUOTA = 0.225;       // 22,5% — alíquota IR para 181-360 dias
+
+  // Conta dias úteis entre duas datas (sem feriados — aproximação razoável)
+  const diasUteisEntre = (dataIni: Date, dataFim: Date): number => {
+    let d = new Date(dataIni);
+    let count = 0;
+    while (d <= dataFim) {
+      const dow = d.getDay();
+      if (dow !== 0 && dow !== 6) count++;
+      d.setDate(d.getDate() + 1);
     }
+    return count;
+  };
+
+  // Rendimento que o capital travado no TD Selic teria gerado no período.
+  // Aplicável APENAS a Venda de Put — é onde o capital fica bloqueado como garantia.
+  // Na Call coberta a garantia são as ações, não dinheiro, então não há TD.
+  const calcRendimentoTD = (op: any): {
+    bruto: number; ir: number; liquido: number;
+  } | null => {
+    if (!op.operacao?.includes("Put")) return null;
+    // A planilha usa valorExercEfetivoTotal (desembolso líquido real se exercido),
+    // não strike × qtde bruto — bate exatamente com os valores reais.
+    if (!op.valorExercEfetivoTotal || op.valorExercEfetivoTotal <= 0) return null;
+    const capitalTravado = op.valorExercEfetivoTotal;
+    const abertura = parseDataAbertura(op);
+    const dataEnc = op.dataEncerramento
+      ? new Date(op.dataEncerramento.includes("/")
+          ? op.dataEncerramento.split("/").reverse().join("-")
+          : op.dataEncerramento)
+      : null;
+    if (!abertura || !dataEnc) return null;
+    const dias = diasUteisEntre(abertura, dataEnc);
+    const bruto = capitalTravado * (Math.pow(1 + TAXA_SELIC_DIARIA, dias) - 1);
+    const ir = bruto * IR_TD_ALIQUOTA;
+    return { bruto, ir, liquido: bruto - ir };
+  };
+
+  // Líquido total da operação = resultado líquido + rendimento TD líquido
+  const calcLiquidoOperacao = (op: any): number | null => {
+    if (op.status !== "Zerada") return null;
+    const td = calcRendimentoTD(op);
+    return (op.resultadoLiquido ?? 0) + (td?.liquido ?? 0);
+  };
+
+  // % Líquido = LíquidoOp / ValorExercEfetivoTotal
+  const calcPctLiquidoOperacao = (op: any): number | null => {
+    const liq = calcLiquidoOperacao(op);
+    if (liq == null || !op.valorExercEfetivoTotal) return null;
+    return (liq / op.valorExercEfetivoTotal) * 100;
+  };
+
+  // % Prêmio Realmente Retido = (ResultadoLíquido + TDLíquido) / PremioTotalBruto
+  const calcPremioRetido = (op: any): number | null => {
+    if (!op.premioTotalBruto) return null;
+    const td = calcRendimentoTD(op);
+    const tdLiq = td?.liquido ?? 0;
+    return ((op.resultadoLiquido ?? 0) + tdLiq) / op.premioTotalBruto * 100;
   };
 
   const calcLucroCapturado = (op: any): number | null => {
@@ -476,10 +540,10 @@ export default function DashboardMesa() {
           <select value={filtroDecisao} onChange={(e) => setFiltroDecisao(e.target.value)}
             className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-700 font-semibold focus:outline-none">
             <option value="TODOS">Todas decisões</option>
-            <option value="MANTER (CALL OTM)">Manter (Call OTM)</option>
-            <option value="MANTER (PUT OTM)">Manter (Put OTM)</option>
-            <option value="AVALIAR ROLAGEM">Avaliar rolagem</option>
-            <option value="DEFENDER / RECOMPRA">Defender / recompra</option>
+            <option value="CARREGAR POSIÇÃO">Carregar posição</option>
+            <option value="AVALIAR ENCERRAMENTO">Avaliar encerramento</option>
+            <option value="MANEJO / AGUARDAR VENCIMENTO">Manejo / aguardar vencimento</option>
+            <option value="DADOS INCORRETOS">Dados incorretos</option>
           </select>
           <select value={ordenacao} onChange={(e) => setOrdenacao(e.target.value)}
             className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-700 font-semibold focus:outline-none">
@@ -512,6 +576,10 @@ export default function DashboardMesa() {
             ? Math.ceil((new Date(op.vencimento).getTime() - new Date().getTime()) / 86400000)
             : null;
           const distNum = parseDistanciaStrike(op.distanciaStrike);
+          const td = calcRendimentoTD(op);
+          const liquidoOp = calcLiquidoOperacao(op);
+          const pctLiquidoOp = calcPctLiquidoOperacao(op);
+          const premioRetido = calcPremioRetido(op);
 
           return (
             <div key={op.id}
@@ -601,9 +669,16 @@ export default function DashboardMesa() {
                           </>
                         ) : <span className="text-xs text-slate-400">sem prêmio informado</span>
                       ) : (
-                        <span className={`text-sm font-mono font-semibold ${op.resultadoLiquido >= 0 ? "text-emerald-600" : "text-red-600"}`}>
-                          {fmt(op.resultadoLiquido)}
-                        </span>
+                        <div className="flex flex-col gap-0.5">
+                          <span className={`text-sm font-mono font-semibold ${op.resultadoLiquido >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                            {fmt(op.resultadoLiquido)}
+                          </span>
+                          {liquidoOp != null && (
+                            <span className="text-[10px] text-slate-400">
+                              + TD: {fmt(liquidoOp)} liq.
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
                   </div>
@@ -684,7 +759,7 @@ export default function DashboardMesa() {
                       { label: "Qtde (contratos)", val: op.qtde?.toLocaleString("pt-BR"), cor: "" },
                       { label: "Cotação ação", val: `${fmt(precoAcaoReal)} · ${emTempoReal ? "tempo real" : "última nota"}`, cor: "text-sky-600" },
                       { label: "Strike", val: fmt(op.strike), cor: "" },
-                      { label: "Prêmio un. inicial", val: fmt(op.premioUnitario), cor: "" },
+                      { label: "Prêmio un. inicial", val: fmt(op.premioUnInicial), cor: "" },
                       { label: "Prêmio total bruto", val: fmt(op.premioTotalBruto), cor: "text-emerald-600 font-semibold" },
                       { label: "Distância do strike", val: fmtPct(op.distanciaStrike), cor: "" },
                       { label: "Exercendo?", val: op.exercendo ?? "Não", cor: op.exercendo === "Sim" ? "text-red-600 font-semibold" : "" },
@@ -697,6 +772,12 @@ export default function DashboardMesa() {
                       { label: "Valor exerc. efetivo total", val: fmt(op.valorExercEfetivoTotal), cor: "" },
                       { label: "DARF", val: fmt(op.darf), cor: "text-red-600" },
                       { label: "Resultado líquido", val: op.status === "Zerada" ? fmt(op.resultadoLiquido) : "—", cor: (op.resultadoLiquido ?? 0) >= 0 ? "text-emerald-600 font-semibold" : "text-red-600 font-semibold" },
+                      ...(op.status === "Zerada" ? [
+                        { label: "Rend. TD líquido", val: td ? fmt(td.liquido) : "—", cor: "text-slate-600" },
+                        { label: "Líquido da operação", val: liquidoOp != null ? fmt(liquidoOp) : "—", cor: (liquidoOp ?? 0) >= 0 ? "text-emerald-600 font-semibold" : "text-red-600 font-semibold" },
+                        { label: "% Líquido op.", val: pctLiquidoOp != null ? `${pctLiquidoOp.toFixed(2)}%` : "—", cor: (pctLiquidoOp ?? 0) >= 0 ? "text-emerald-600" : "text-red-600" },
+                        { label: "% Prêmio retido", val: premioRetido != null ? `${premioRetido.toFixed(2)}%` : "—", cor: (premioRetido ?? 0) >= 100 ? "text-emerald-600 font-semibold" : (premioRetido ?? 0) >= 0 ? "text-amber-600" : "text-red-600" },
+                      ] : []),
                     ].map(({ label, val, cor }) => (
                       <div key={label}>
                         <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block leading-tight">{label}</span>
@@ -708,6 +789,47 @@ export default function DashboardMesa() {
                       <span className={`inline-block mt-1 text-[11px] px-3 py-1 rounded font-semibold border ${gatilho.estilo}`}>{gatilho.texto}</span>
                     </div>
                   </div>
+
+                  {/* Rendimento TD Selic — só para zeradas com capital travado */}
+                  {op.status === "Zerada" && op.valorExercEfetivoTotal > 0 && td && (
+                    <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-col gap-3">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest">
+                        Comparativo Tesouro SELIC (~14,25% a.a.)
+                      </p>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-x-6 gap-y-3">
+                        <div>
+                          <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">Rend. TD bruto</span>
+                          <span className="text-xs font-mono mt-1 block text-slate-700">{fmt(td.bruto)}</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">IR s/ TD (22,5%)</span>
+                          <span className="text-xs font-mono mt-1 block text-red-600">{fmt(td.ir)}</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">Rend. TD líquido</span>
+                          <span className="text-xs font-mono mt-1 block text-slate-700">{fmt(td.liquido)}</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">Líquido da operação</span>
+                          <span className={`text-xs font-mono mt-1 block font-semibold ${(liquidoOp ?? 0) >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                            {liquidoOp != null ? fmt(liquidoOp) : "—"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">% Líquido op.</span>
+                          <span className={`text-xs font-mono mt-1 block font-semibold ${(pctLiquidoOp ?? 0) >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                            {pctLiquidoOp != null ? `${pctLiquidoOp.toFixed(2)}%` : "—"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">% Prêmio retido</span>
+                          <span className={`text-xs font-mono mt-1 block font-semibold ${(premioRetido ?? 0) >= 100 ? "text-emerald-600" : (premioRetido ?? 0) >= 0 ? "text-amber-600" : "text-red-600"}`}>
+                            {premioRetido != null ? `${premioRetido.toFixed(2)}%` : "—"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Custos e rastreabilidade */}
                   <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-col gap-3">
