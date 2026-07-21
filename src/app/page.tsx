@@ -769,6 +769,7 @@ export default function DashboardMesa() {
             className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-700 font-semibold focus:outline-none"
           >
             <option value="TODOS">Todas decisões</option>
+            <option value="DEFENDER / RECOMPRA">Defender / recompra</option>
             <option value="CARREGAR POSIÇÃO">Carregar posição</option>
             <option value="AVALIAR ENCERRAMENTO">Avaliar encerramento</option>
             <option value="MANEJO / AGUARDAR VENCIMENTO">
