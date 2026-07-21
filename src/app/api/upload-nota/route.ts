@@ -4,7 +4,10 @@ import { prisma } from "@/app/lib/db";
 import { NextResponse } from "next/server";
 import { extractText, getDocumentProxy } from "unpdf";
 
-async function extrairTextoPdf(pdfBuffer: Buffer, password: string): Promise<string> {
+async function extrairTextoPdf(
+  pdfBuffer: Buffer,
+  password: string,
+): Promise<string> {
   const pdf = await getDocumentProxy(new Uint8Array(pdfBuffer), { password });
   const { text } = await extractText(pdf, { mergePages: true });
   return text;
@@ -101,8 +104,8 @@ interface LinhaNegociacao {
   tipoMercado: string;
   codigo: string;
   quantidade: number;
-  precoUnitario: number;  // prêmio da opção
-  strikeReal: number;     // strike extraído da especificação do título
+  precoUnitario: number; // prêmio da opção
+  strikeReal: number; // strike extraído da especificação do título
   vencimento: string | null; // YYYY-MM-DD — terceira segunda do mês do prazo
   valorTotal: number;
 }
@@ -124,8 +127,10 @@ function parseLinhas(text: string): LinhaNegociacao[] {
   // Opções: OPCAO DE COMPRA / VENDA — código tem padrão XXXXL99(99)
   // Captura prazo (MM/YY), código, strike, qtde, prêmio, total
   // "V OPCAO DE COMPRA 07/26 PETRG412 PN 40,11 PETRE 1200 1,10 1.320,00 C"
+  // Fix: após o código abreviado (ex: GGBRE, PETRE) pode aparecer sufixo "FM",
+  // "FM/EJ" ou outros marcadores antes da quantidade. O .*? lazy pula tudo isso.
   const regexOpcao =
-    /([CV])\s+OPCAO\s*DE\s*(COMPRA|VENDA)\s+(\d{2})\/(\d{2})\s+([A-Z]{4}[A-Z]\d{2,4})\s+(?:PN|ON|UNT|PNB|DRN|CI)?\s*(?:N[12])?\s*([\d,]+)\s+\S+\s+#?\s*([\d.]+)\s+([\d,.]+)\s+([\d,.]+)\s+[DC]/gi;
+    /([CV])\s+OPCAO\s*DE\s*(COMPRA|VENDA)\s+(\d{2})\/(\d{2})\s+([A-Z]{4}[A-Z]\d{2,4})\s+(?:PN|ON|UNT|PNB|DRN|CI)?\s*(?:N[12])?\s*([\d,]+)\s+.*?#?\s*([\d.]+)\s+([\d,.]+)\s+([\d,.]+)\s+[DC]/gi;
 
   // Ações à vista: "C VISTAPETROBRAS PN N2 @ 500 39,16 19.580,00 D"
   // VISTA pode estar colado ao nome da empresa — capturamos o nome e mapeamos.
@@ -139,8 +144,22 @@ function parseLinhas(text: string): LinhaNegociacao[] {
   let m;
 
   while ((m = regexOpcao.exec(text)) !== null) {
-    const [, cv, tipo, prazoMes, prazoAno, codigo, strikeStr, qtde, preco, total] = m;
-    const vencimento = terceiraSegundaFeira(2000 + parseInt(prazoAno, 10), parseInt(prazoMes, 10));
+    const [
+      ,
+      cv,
+      tipo,
+      prazoMes,
+      prazoAno,
+      codigo,
+      strikeStr,
+      qtde,
+      preco,
+      total,
+    ] = m;
+    const vencimento = terceiraSegundaFeira(
+      2000 + parseInt(prazoAno, 10),
+      parseInt(prazoMes, 10),
+    );
     linhas.push({
       cv: cv.toUpperCase() as "C" | "V",
       tipoMercado: `OPCAO DE ${tipo.toUpperCase()}`,
@@ -193,23 +212,44 @@ function parseLinhas(text: string): LinhaNegociacao[] {
 
 function extrairResumoFinanceiro(text: string) {
   return {
-    valorLiquidoOperacoes: extrairCampoInvertido(text, /Valor\s*l[íi]quido\s*das\s*opera[çc][õo]es/i),
-    taxaLiquidacao: extrairCampoInvertido(text, /Taxa\s*de\s*liquida[çc][ãa]o/i),
+    valorLiquidoOperacoes: extrairCampoInvertido(
+      text,
+      /Valor\s*l[íi]quido\s*das\s*opera[çc][õo]es/i,
+    ),
+    taxaLiquidacao: extrairCampoInvertido(
+      text,
+      /Taxa\s*de\s*liquida[çc][ãa]o/i,
+    ),
     taxaRegistro: extrairCampoInvertido(text, /Taxa\s*de\s*Registro/i),
     totalCBLC: extrairCampoInvertido(text, /Total\s*CBLC/i),
-    taxaTermoOpcoes: extrairCampoInvertido(text, /Taxa\s*de\s*termo\/?\s*op[çc][õo]es/i),
+    taxaTermoOpcoes: extrairCampoInvertido(
+      text,
+      /Taxa\s*de\s*termo\/?\s*op[çc][õo]es/i,
+    ),
     taxaANA: extrairCampoInvertido(text, /Taxa\s*A\.?N\.?A\.?/i),
     emolumentos: extrairCampoInvertido(text, /Emolumentos/i),
-    taxaTransfAtivos: extrairCampoInvertido(text, /Taxa\s*de\s*Transf\.?\s*de\s*Ativos/i),
-    totalBovespaSoma: extrairCampoInvertido(text, /Total\s*Bovespa\s*\/?\s*Soma/i),
+    taxaTransfAtivos: extrairCampoInvertido(
+      text,
+      /Taxa\s*de\s*Transf\.?\s*de\s*Ativos/i,
+    ),
+    totalBovespaSoma: extrairCampoInvertido(
+      text,
+      /Total\s*Bovespa\s*\/?\s*Soma/i,
+    ),
     taxaOperacional: extrairCampoInvertido(text, /Taxa\s*Operacional/i),
     execucao: extrairCampoInvertido(text, /Execu[çc][ãa]o/i),
     taxaCustodia: extrairCampoInvertido(text, /Taxa\s*de\s*Cust[óo]dia/i),
     impostos: extrairCampoInvertido(text, /Impostos/i),
     irrf: extrairCampoInvertido(text, /I\.?R\.?R\.?F\.?/i),
     outros: extrairCampoInvertido(text, /Outros/i),
-    totalCustosDespesas: extrairCampoInvertido(text, /Total\s*Custos?\s*\/?\s*Despesas/i),
-    liquidoNota: extrairCampoInvertido(text, /L[íi]quido\s*para\s*\d{2}\/\d{2}\/\d{4}/i),
+    totalCustosDespesas: extrairCampoInvertido(
+      text,
+      /Total\s*Custos?\s*\/?\s*Despesas/i,
+    ),
+    liquidoNota: extrairCampoInvertido(
+      text,
+      /L[íi]quido\s*para\s*\d{2}\/\d{2}\/\d{4}/i,
+    ),
   };
 }
 
@@ -240,7 +280,10 @@ function separarBlocos(text: string): BlocoNota[] {
     const dataMatch = trecho.match(/Data\s+preg[ãa]o\s+(\d{2}\/\d{2}\/\d{4})/i);
 
     if (!notaMatch) {
-      console.warn("[upload-nota] Bloco sem Nr. nota — ignorado. Trecho:", trecho.slice(0, 200));
+      console.warn(
+        "[upload-nota] Bloco sem Nr. nota — ignorado. Trecho:",
+        trecho.slice(0, 200),
+      );
       continue;
     }
 
@@ -260,7 +303,10 @@ export async function POST(request: Request) {
     const password = (formData.get("password") as string) || "684";
 
     if (!file) {
-      return NextResponse.json({ error: "Nenhum arquivo enviado." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Nenhum arquivo enviado." },
+        { status: 400 },
+      );
     }
 
     const arrayBuffer = await file.arrayBuffer();
@@ -273,10 +319,15 @@ export async function POST(request: Request) {
       const nome = err?.name || "";
       const msg = String(err?.message || "");
       if (nome === "PasswordException" || /password/i.test(msg)) {
-        return NextResponse.json({ error: "Senha incorreta do PDF." }, { status: 401 });
+        return NextResponse.json(
+          { error: "Senha incorreta do PDF." },
+          { status: 401 },
+        );
       }
       return NextResponse.json(
-        { error: "Falha ao ler o PDF: " + (err?.message || "arquivo inválido.") },
+        {
+          error: "Falha ao ler o PDF: " + (err?.message || "arquivo inválido."),
+        },
         { status: 422 },
       );
     }
@@ -284,17 +335,24 @@ export async function POST(request: Request) {
     const blocos = separarBlocos(text);
     if (blocos.length === 0) {
       return NextResponse.json(
-        { error: "Não foi possível identificar blocos de negociação no documento." },
+        {
+          error:
+            "Não foi possível identificar blocos de negociação no documento.",
+        },
         { status: 422 },
       );
     }
 
     // Verifica duplicidade antes de processar qualquer bloco
     for (const bloco of blocos) {
-      const existente = await prisma.notasProcessadas.findUnique({ where: { id: bloco.numeroNota } });
+      const existente = await prisma.notasProcessadas.findUnique({
+        where: { id: bloco.numeroNota },
+      });
       if (existente) {
         return NextResponse.json(
-          { error: `Nota nº ${bloco.numeroNota} já foi importada anteriormente.` },
+          {
+            error: `Nota nº ${bloco.numeroNota} já foi importada anteriormente.`,
+          },
           { status: 409 },
         );
       }
@@ -323,8 +381,10 @@ export async function POST(request: Request) {
       // entre as opções nem vice-versa — cada nota tem seus próprios custos).
       const linhasOpcao = linhas.filter((l) => l.tipoMercado !== "VISTA");
       const valorBaseRateio =
-        (linhasOpcao.length > 0 ? linhasOpcao : linhas)
-          .reduce((soma, l) => soma + l.valorTotal, 0) || 1;
+        (linhasOpcao.length > 0 ? linhasOpcao : linhas).reduce(
+          (soma, l) => soma + l.valorTotal,
+          0,
+        ) || 1;
 
       const custoOperacionalTotal =
         resumo.taxaLiquidacao +
@@ -346,7 +406,8 @@ export async function POST(request: Request) {
         const isCall = linha.tipoMercado === "OPCAO DE COMPRA";
         const isPut = linha.tipoMercado === "OPCAO DE VENDA";
         const isVista = linha.tipoMercado === "VISTA";
-        const custosDaLinha = custoOperacionalTotal * (linha.valorTotal / valorBaseRateio);
+        const custosDaLinha =
+          custoOperacionalTotal * (linha.valorTotal / valorBaseRateio);
 
         // ── Ação à vista ────────────────────────────────────────────────
         if (isVista) {
@@ -361,7 +422,7 @@ export async function POST(request: Request) {
             qtde: linha.quantidade,
             cotacaoAcao: linha.precoUnitario,
             strike: linha.precoUnitario,
-            premioUnInicial: linha.precoUnitario,
+            premioUnitario: linha.precoUnitario,
             premioTotalBruto: linha.valorTotal,
             distanciaStrike: "0,00%",
             exercendo: "Não",
@@ -393,18 +454,20 @@ export async function POST(request: Request) {
             tipo: "Venda",
             codigo: linha.codigo,
             qtde: linha.quantidade,
-            cotacaoAcao: 0.0,           // desconhecida na nota; preenchida pela API de mercado
+            cotacaoAcao: 0.0, // desconhecida na nota; preenchida pela API de mercado
             strike: strikeOpcao,
-            premioUnInicial: linha.precoUnitario,
+            premioUnitario: linha.precoUnitario,
             premioTotalBruto: linha.valorTotal,
-            distanciaStrike: "0,00%",   // recalculada pela API de mercado
+            distanciaStrike: "0,00%", // recalculada pela API de mercado
             exercendo: "Não",
-            cotacaoOpcao: linha.precoUnitario,  // igual ao prêmio inicial até edição manual
+            cotacaoOpcao: linha.precoUnitario, // igual ao prêmio inicial até edição manual
             lucroCapturado: "0,00%",
             custoRecompraTotal: 0.0,
             resultadoBrutoReal: linha.valorTotal,
             valorExercicioUn: strikeOpcao,
-            valorExercEfetivoTotal: isPut ? linha.quantidade * strikeOpcao : 0.0,
+            valorExercEfetivoTotal: isPut
+              ? linha.quantidade * strikeOpcao
+              : 0.0,
             darf: 0.0,
             resultadoLiquido: linha.valorTotal,
             status: "Aberta",
@@ -430,11 +493,15 @@ export async function POST(request: Request) {
             const proporcaoAbertura = qtdeFechar / posicao.qtde;
             const proporcaoRecompra = qtdeFechar / linha.quantidade;
 
-            const premioProporcional = posicao.premioTotalBruto * proporcaoAbertura;
-            const custoRecompraProporcional = linha.valorTotal * proporcaoRecompra;
+            const premioProporcional =
+              posicao.premioTotalBruto * proporcaoAbertura;
+            const custoRecompraProporcional =
+              linha.valorTotal * proporcaoRecompra;
             const resultado = premioProporcional - custoRecompraProporcional;
             const lucroCapturadoPct =
-              premioProporcional > 0 ? (resultado / premioProporcional) * 100 : 0;
+              premioProporcional > 0
+                ? (resultado / premioProporcional) * 100
+                : 0;
 
             if (qtdeFechar === posicao.qtde) {
               atualizacoesFechamento.push({
@@ -444,7 +511,8 @@ export async function POST(request: Request) {
                   cotacaoOpcao: precoRecompraUnit,
                   custoRecompraTotal: custoRecompraProporcional,
                   resultadoBrutoReal: resultado,
-                  resultadoLiquido: resultado - custosDaLinha * proporcaoRecompra,
+                  resultadoLiquido:
+                    resultado - custosDaLinha * proporcaoRecompra,
                   lucroCapturado: `${lucroCapturadoPct.toFixed(2)}%`,
                   dataEncerramento: dataPregao,
                   numeroNotaFechamento: numeroNota,
@@ -455,7 +523,8 @@ export async function POST(request: Request) {
                 id: posicao.id,
                 data: {
                   qtde: posicao.qtde - qtdeFechar,
-                  premioTotalBruto: posicao.premioTotalBruto - premioProporcional,
+                  premioTotalBruto:
+                    posicao.premioTotalBruto - premioProporcional,
                 },
               });
               fechamentosParciaisNovos.push({
@@ -468,7 +537,7 @@ export async function POST(request: Request) {
                 qtde: qtdeFechar,
                 cotacaoAcao: posicao.cotacaoAcao,
                 strike: posicao.strike,
-                premioUnInicial: posicao.premioUnInicial,
+                premioUnitario: posicao.premioUnitario,
                 premioTotalBruto: premioProporcional,
                 distanciaStrike: posicao.distanciaStrike,
                 exercendo: "Não",
@@ -497,19 +566,22 @@ export async function POST(request: Request) {
               data: dataPregao,
               vencimento: linha.vencimento ?? null,
               ativo: resolverAtivoBase(linha.codigo),
-              operacao: isCall ? "Compra de Call (sem par)" : "Compra de Put (sem par)",
+              operacao: isCall
+                ? "Compra de Call (sem par)"
+                : "Compra de Put (sem par)",
               tipo: "Compra",
               codigo: linha.codigo,
               qtde: restante,
               cotacaoAcao: precoRecompraUnit,
               strike: linha.strikeReal ?? precoRecompraUnit,
-              premioUnInicial: precoRecompraUnit,
+              premioUnitario: precoRecompraUnit,
               premioTotalBruto: 0.0,
               distanciaStrike: "0,00%",
               exercendo: "Não",
               cotacaoOpcao: precoRecompraUnit,
               lucroCapturado: "0,00%",
-              custoRecompraTotal: linha.valorTotal * (restante / linha.quantidade),
+              custoRecompraTotal:
+                linha.valorTotal * (restante / linha.quantidade),
               resultadoBrutoReal: 0.0,
               valorExercicioUn: 0.0,
               valorExercEfetivoTotal: 0.0,
@@ -525,7 +597,9 @@ export async function POST(request: Request) {
       }
 
       await prisma.$transaction([
-        ...(aberturas.length ? [prisma.operacao.createMany({ data: aberturas })] : []),
+        ...(aberturas.length
+          ? [prisma.operacao.createMany({ data: aberturas })]
+          : []),
         ...(fechamentosParciaisNovos.length
           ? [prisma.operacao.createMany({ data: fechamentosParciaisNovos })]
           : []),
@@ -547,7 +621,9 @@ export async function POST(request: Request) {
         numeroNota,
         linhasProcessadas: linhas.length,
         posicoesAbertas: aberturas.length,
-        posicoesFechadas: atualizacoesFechamento.filter((a) => a.data.status === "Zerada").length,
+        posicoesFechadas: atualizacoesFechamento.filter(
+          (a) => a.data.status === "Zerada",
+        ).length,
         fechamentosParciais: fechamentosParciaisNovos.length,
       });
 
@@ -569,7 +645,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: true,
       notas: resultados,
-      notasSemLinhasReconhecidas: blocosSemLinhas.length > 0 ? blocosSemLinhas : null,
+      notasSemLinhasReconhecidas:
+        blocosSemLinhas.length > 0 ? blocosSemLinhas : null,
       avisoSemCorrespondencia:
         semCorrespondenciaTotal.length > 0
           ? `${semCorrespondenciaTotal.length} linha(s) de recompra sem posição aberta — marcadas com precisaRevisao.`
