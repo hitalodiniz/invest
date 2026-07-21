@@ -129,14 +129,16 @@ function parseLinhas(text: string): LinhaNegociacao[] {
   // "V OPCAO DE COMPRA 07/26 PETRG412 PN 40,11 PETRE 1200 1,10 1.320,00 C"
   // Fix: após o código abreviado (ex: GGBRE, PETRE) pode aparecer sufixo "FM",
   // "FM/EJ" ou outros marcadores antes da quantidade. O .*? lazy pula tudo isso.
+  // Regex ajustada para capturar opções da Clear:
+  // Exemplo: "1-BOVESPA C OPCAO DE VENDA 07/26 BBDCS2 PN 17,08 BBDCE /EJ 1000 0,03 30,00 D"
   const regexOpcao =
-    /([CV])\s+OPCAO\s*DE\s*(COMPRA|VENDA)\s+(\d{2})\/(\d{2})\s+([A-Z]{4}[A-Z]\d{2,4})\s+(?:PN|ON|UNT|PNB|DRN|CI)?\s*(?:N[12])?\s*([\d,]+)\s+.*?#?\s*([\d.]+)\s+([\d,.]+)\s+([\d,.]+)\s+[DC]/gi;
+    /(?:1-BOVESPA\s+)?([CV])\s+OPCAO\s*DE\s*(COMPRA|VENDA)\s+(\d{2})\/(\d{2})\s+([A-Z0-9]+)\s+(?:PN|ON|UNT|PNB|DRN|CI)?\s*([\d,]+)\s+.*?(\d+)\s+([\d,.]+)\s+([\d,.]+)\s+[DC]/gi;
 
   // Ações à vista: "C VISTAPETROBRAS PN N2 @ 500 39,16 19.580,00 D"
   // VISTA pode estar colado ao nome da empresa — capturamos o nome e mapeamos.
+  // Regex para mercado à vista ajustada para tolerar o prefixo "1-BOVESPA"
   const regexAcao =
-    /([CV])\s+VISTA([A-Z][A-Z\s]+?)\s+(?:PN|ON|UNT|N1|N2|PNB|DRN|CI)?\s*(?:N[12])?\s*(?:@\s*)?([\d.]+)\s+([\d,.]+)\s+([\d,.]+)\s+[DC]/gi;
-
+    /(?:1-BOVESPA\s+)?([CV])\s+VISTA([A-Z][A-Z\s]+?)\s+(?:PN|ON|UNT|N1|N2|PNB|DRN|CI)?\s*(?:N[12])?\s*(?:@\s*)?([\d.]+)\s+([\d,.]+)\s+([\d,.]+)\s+[DC]/gi;
   // Exercício de opção
   const regexExerc =
     /([CV])\s+EXERC\s*OPC\s+.*?\s+([A-Z]{4}[A-Z]\d{2,4})\s+.*?\s+([\d.]+)\s+([\d,.]+)\s+([\d,.]+)\s+[DC]/gi;
